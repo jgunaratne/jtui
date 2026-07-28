@@ -10,6 +10,7 @@ import {
 	type UserContent,
 	type VertexClient,
 } from "@jtui/ai";
+import { LoopDetector } from "./loop-detector.ts";
 import type {
 	AgentConfig,
 	AgentEvent,
@@ -116,29 +117,59 @@ export async function* runAgent(
 		};
 
 		let assistantMessage: AssistantMessage | undefined;
-		for await (const event of client.stream(config.model, context, {
-			temperature: config.temperature,
-			thinking: config.thinking,
-			maxOutputTokens: config.maxOutputTokens,
-			signal,
-		})) {
-			switch (event.type) {
-				case "start":
-					yield { type: "message_start", model: event.model };
-					break;
-				case "text_delta":
-					yield { type: "text_delta", delta: event.delta };
-					break;
-				case "thinking_delta":
-					yield { type: "thinking_delta", delta: event.delta };
-					break;
-				case "tool_call":
-					// Surfaced again as tool_start once execution begins.
-					break;
-				case "done":
-					assistantMessage = event.message;
-					break;
+		// A turn-scoped controller so a detected loop can stop the stream
+		// without cancelling the whole run.
+		const turnController = new AbortController();
+		const propagateAbort = () => turnController.abort();
+		signal.addEventListener("abort", propagateAbort, { once: true });
+		const detector = config.detectLoops === false ? undefined : new LoopDetector({ threshold: config.loopThreshold });
+		let looped = false;
+
+		try {
+			for await (const event of client.stream(config.model, context, {
+				temperature: config.temperature,
+				thinking: config.thinking,
+				maxOutputTokens: config.maxOutputTokens,
+				signal: turnController.signal,
+			})) {
+				switch (event.type) {
+					case "start":
+						yield { type: "message_start", model: event.model };
+						break;
+					case "text_delta":
+						yield { type: "text_delta", delta: event.delta };
+						if (detector?.push(event.delta) && !looped) {
+							looped = true;
+							turnController.abort();
+						}
+						break;
+					case "thinking_delta":
+						yield { type: "thinking_delta", delta: event.delta };
+						break;
+					case "tool_call":
+						// Surfaced again as tool_start once execution begins.
+						break;
+					case "done":
+						assistantMessage = event.message;
+						break;
+				}
 			}
+		} finally {
+			signal.removeEventListener("abort", propagateAbort);
+		}
+
+		if (looped) {
+			const repeatedUnit = detector?.repeatedUnit ?? "";
+			if (assistantMessage) {
+				// Keep the partial answer so the user can see where it went wrong.
+				assistantMessage.stopReason = "stop";
+				state.messages.push(assistantMessage);
+				state.totalUsage = addUsage(state.totalUsage, assistantMessage.usage);
+				yield { type: "assistant_message", message: assistantMessage };
+			}
+			yield { type: "loop_detected", repeatedUnit };
+			yield { type: "turn_end", reason: "stop", usage: assistantMessage?.usage ?? emptyUsage() };
+			return;
 		}
 
 		if (!assistantMessage) {

@@ -13,6 +13,8 @@ export interface JtuiConfig {
 	temperature?: number;
 	maxOutputTokens?: number;
 	maxTurns?: number;
+	/** Stop a turn when the model repeats itself. Defaults to true. */
+	detectLoops?: boolean;
 	/**
 	 * Per-model token rates, used only for the local cost estimate. jtui ships
 	 * no pricing data because Vertex bills your project's own rates.

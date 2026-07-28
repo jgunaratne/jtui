@@ -45,6 +45,8 @@ export type AgentEvent =
 	| { type: "tool_start"; toolCall: ToolCallContent; summary: string }
 	| { type: "tool_end"; execution: ToolExecution }
 	| { type: "turn_end"; reason: StopReason; usage: Usage }
+	/** The turn was cut short because the model looped. */
+	| { type: "loop_detected"; repeatedUnit: string }
 	| { type: "error"; message: string };
 
 export interface AgentConfig {
@@ -58,6 +60,13 @@ export interface AgentConfig {
 	temperature?: number;
 	thinking?: "off" | "low" | "medium" | "high";
 	maxOutputTokens?: number;
+	/**
+	 * Cut a turn short when the model starts repeating itself. Defaults to
+	 * true; set false to let a looping model run to its token limit.
+	 */
+	detectLoops?: boolean;
+	/** Repeats of the same output before a turn is judged stuck. Defaults to 5. */
+	loopThreshold?: number;
 }
 
 /** Conversation state, persisted between runs. */

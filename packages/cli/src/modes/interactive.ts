@@ -329,6 +329,15 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 						loader.label = "Thinking";
 						loader.start();
 						break;
+					case "loop_detected": {
+						const preview = event.repeatedUnit.split("\n")[0]?.slice(0, 70) ?? "";
+						emit([
+							yellow("Stopped: the model was repeating itself."),
+							dim(`  repeated: ${preview}`),
+							dim("  Rephrase, or try another model with /model."),
+						]);
+						break;
+					}
 					case "error":
 						emitError(event.message);
 						break;

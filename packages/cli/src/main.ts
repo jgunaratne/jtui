@@ -157,6 +157,7 @@ export async function main(argv: string[]): Promise<number> {
 		temperature: fileConfig.temperature,
 		maxOutputTokens: fileConfig.maxOutputTokens,
 		maxTurns: args.maxTurns ?? fileConfig.maxTurns,
+		detectLoops: args.noLoopDetection ? false : fileConfig.detectLoops,
 	};
 
 	// Resume an existing transcript when asked, otherwise start a fresh one.

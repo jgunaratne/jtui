@@ -51,6 +51,10 @@ export async function runPrint(options: PrintOptions): Promise<number> {
 					// Separate consecutive assistant turns in the output stream.
 					if (messageText(event.message).trim().length > 0) process.stdout.write("\n");
 					break;
+				case "loop_detected":
+					process.stderr.write("Stopped: the model was repeating itself.\n");
+					failed = true;
+					break;
 				case "error":
 					process.stderr.write(`${event.message}\n`);
 					failed = true;

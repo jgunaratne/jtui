@@ -1,4 +1,5 @@
 export { createState, runAgent } from "./agent-loop.ts";
+export { LoopDetector, type LoopDetectorOptions } from "./loop-detector.ts";
 export { listSessions, loadSession, newSessionId, Session, type SessionSummary } from "./session.ts";
 export type {
 	AgentConfig,

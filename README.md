@@ -43,18 +43,70 @@ Each layer depends only on the ones above it.
 Requires Node 22.19+ and a Google Cloud project with the Vertex AI API enabled.
 
 ```bash
+git clone git@github.com:jgunaratne/jtui.git
+cd jtui
 npm install
 npm run build
+```
 
-# One-time Google Cloud setup
+One-time Google Cloud setup:
+
+```bash
 gcloud auth application-default login
 gcloud config set project YOUR_PROJECT_ID
 gcloud services enable aiplatform.googleapis.com
-
-./jtui-dev.sh auth      # verify credentials resolve
 ```
 
-`jtui auth` prints the project, location, and where each came from — start there if anything fails.
+Most Claude models are not served from `us-central1` (the default), so set the
+`global` endpoint once:
+
+```bash
+mkdir -p ~/.jtui && echo '{"location":"global"}' > ~/.jtui/config.json
+```
+
+Then check it resolves — `jtui auth` prints the project, location, and where each came
+from, and is the first place to look if anything fails:
+
+```bash
+./jtui-dev.sh auth
+```
+
+### Running `jtui` from anywhere
+
+Put the built entry point on your `PATH`:
+
+```bash
+mkdir -p ~/.local/bin
+ln -sf "$PWD/packages/cli/dist/cli.js" ~/.local/bin/jtui
+```
+
+If that directory is not already on your `PATH`, add it (`~/.zshrc` on macOS,
+`~/.bashrc` on most Linux):
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+Now `jtui` works from any directory:
+
+```bash
+cd ~/any/project
+jtui
+```
+
+Three caveats:
+
+- The symlink points at `dist/`, so **run `npm run build` after changing jtui's source**
+  or you keep running the old binary. To always run current source, point the symlink at
+  `jtui-dev.sh` instead — no build step, slightly slower startup.
+- **Keep the repo where it is, with its `node_modules`.** The symlink resolves to the real
+  path and loads `@jtui/*` from the repo.
+- Config lives in `~/.jtui/`, which is **per machine** — repeat the `location` step on each
+  one.
+
+`npm link --workspace @jtui/cli` achieves the same thing through npm; the symlink is
+preferred because it needs no sudo and does not depend on where your npm prefix points.
 
 ## Usage
 
@@ -182,6 +234,19 @@ falls back to a pure-Node scan.
 
 There is no permission prompt: tools run with the privileges of the user who started jtui. Run it in
 a container or VM if you need a real boundary.
+
+## Runaway output
+
+Models occasionally get stuck repeating a sentence until they hit the token limit. jtui watches
+streamed output for a unit of up to four lines repeating five times in a row, then ends the turn,
+keeps whatever was produced, and says what it was repeating. Blank lines, table rules, code fences,
+and short list markers cannot trip it.
+
+Turn it off with `--no-loop-detection`, or in config:
+
+```json
+{ "detectLoops": false }
+```
 
 ## Development
 

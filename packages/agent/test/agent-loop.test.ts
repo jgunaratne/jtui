@@ -298,3 +298,64 @@ describe("sessions", () => {
 		expect(loadSession(session.path).messages).toHaveLength(1);
 	});
 });
+
+describe("loop detection", () => {
+	/** Client that streams a repeating sentence until the signal aborts. */
+	function loopingClient(): { client: VertexClient; deltas: () => number } {
+		let sent = 0;
+		const client = {
+			credentials: { project: "p", location: "l", projectSource: "test", credentialSource: "test" },
+			async *stream(model: string, _context: Context, options?: { signal?: AbortSignal }): AsyncGenerator<StreamEvent> {
+				yield { type: "start", model };
+				const line = "I don't have that detail exposed to me, only the provider.\n";
+				// A model with no stopping condition; only the abort ends it.
+				for (let index = 0; index < 500; index++) {
+					if (options?.signal?.aborted) break;
+					sent += 1;
+					yield { type: "text_delta", delta: line };
+				}
+				yield {
+					type: "done",
+					message: assistant([{ type: "text", text: line.repeat(sent) }], "stop"),
+				};
+			},
+		} as unknown as VertexClient;
+		return { client, deltas: () => sent };
+	}
+
+	it("cuts the turn short and reports the repeated text", async () => {
+		const { client, deltas } = loopingClient();
+		const state = createState();
+		const events = await collect(runAgent(client, config(), state, "go", new AbortController().signal));
+
+		const detected = events.find((event) => event.type === "loop_detected");
+		expect(detected).toBeDefined();
+		expect(JSON.stringify(detected)).toContain("only the provider");
+		// Stopped early rather than running to the model's own limit.
+		expect(deltas()).toBeLessThan(20);
+		expect(events.at(-1)).toMatchObject({ type: "turn_end" });
+	});
+
+	it("keeps the partial answer in history", async () => {
+		const { client } = loopingClient();
+		const state = createState();
+		await collect(runAgent(client, config(), state, "go", new AbortController().signal));
+		expect(state.messages.some((message) => message.role === "assistant")).toBe(true);
+	});
+
+	it("can be turned off", async () => {
+		const { client, deltas } = loopingClient();
+		const events = await collect(
+			runAgent(client, config([], { detectLoops: false }), createState(), "go", new AbortController().signal),
+		);
+		expect(events.find((event) => event.type === "loop_detected")).toBeUndefined();
+		expect(deltas()).toBe(500);
+	});
+
+	it("leaves a normal answer untouched", async () => {
+		const { client } = fakeClient([assistant([{ type: "text", text: "a\nb\nc\nd\ne\nf\n" }], "stop")]);
+		const events = await collect(runAgent(client, config(), createState(), "go", new AbortController().signal));
+		expect(events.find((event) => event.type === "loop_detected")).toBeUndefined();
+		expect(events.at(-1)).toMatchObject({ type: "turn_end", reason: "stop" });
+	});
+});

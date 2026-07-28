@@ -21,6 +21,8 @@ export interface ParsedArgs {
 	refresh: boolean;
 	/** Include models jtui has no adapter for. */
 	all: boolean;
+	/** Disable cutting a turn short when the model repeats itself. */
+	noLoopDetection: boolean;
 	errors: string[];
 }
 
@@ -50,6 +52,7 @@ Options
       --no-project-context ignore JTUI.md / AGENTS.md / CLAUDE.md
       --refresh            re-query the model catalog instead of using the cache
       --all                with 'models', include publishers jtui cannot call
+      --no-loop-detection  do not stop a turn when the model repeats itself
   -h, --help               show this help
       --version            show the version
 
@@ -74,6 +77,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
 		noProjectContext: false,
 		refresh: false,
 		all: false,
+		noLoopDetection: false,
 		errors: [],
 	};
 	const positional: string[] = [];
@@ -122,6 +126,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
 				break;
 			case "--all":
 				args.all = true;
+				break;
+			case "--no-loop-detection":
+				args.noLoopDetection = true;
 				break;
 			case "-m":
 			case "--model":
