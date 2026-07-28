@@ -32,6 +32,8 @@ export interface InteractiveOptions {
 	session: Session;
 	bash: BashExecutor;
 	cwd: string;
+	/** Rebuilds the system prompt for a model, so /model keeps it accurate. */
+	systemPromptFor?: (model: string) => string;
 	/** Prompt to run immediately on startup. */
 	initialPrompt?: string;
 }
@@ -204,6 +206,10 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 			throw error;
 		}
 		config.model = id;
+		// The prompt names the model; leaving it stale makes the agent
+		// misreport what it is.
+		const prompt = options.systemPromptFor?.(id);
+		if (prompt) config.systemPrompt = prompt;
 		updateStatus();
 		emit([green(`Model set to ${id}`)]);
 	};

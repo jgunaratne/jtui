@@ -105,6 +105,29 @@ describe("system prompt", () => {
 		expect(buildSystemPrompt({ cwd, noProjectContext: true })).not.toContain("secret instructions");
 	});
 
+	it("names the model it is actually serving", () => {
+		const cwd = workspace();
+		const prompt = buildSystemPrompt({ cwd, model: "claude-opus-4-8", publisher: "anthropic" });
+		expect(prompt).toContain("claude-opus-4-8");
+		expect(prompt).toContain("anthropic");
+	});
+
+	it("never asserts a provider the session is not using", () => {
+		const cwd = workspace();
+		// A hardcoded family name here gets repeated to the user as fact, and is
+		// wrong for every model from another publisher.
+		for (const model of ["claude-opus-4-8", "gemini-2.5-pro"]) {
+			const prompt = buildSystemPrompt({ cwd, model });
+			const other = model.startsWith("claude") ? "Gemini" : "Claude";
+			expect(prompt, `${model} must not claim ${other}`).not.toContain(other);
+		}
+	});
+
+	it("omits the model line when none is given", () => {
+		const cwd = workspace();
+		expect(buildSystemPrompt({ cwd })).not.toContain("Model:");
+	});
+
 	it("ignores an empty instruction file", () => {
 		const cwd = workspace();
 		writeFileSync(join(cwd, "JTUI.md"), "   \n", "utf8");

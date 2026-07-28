@@ -149,9 +149,18 @@ export async function main(argv: string[]): Promise<number> {
 
 	const { tools, bash } = createDefaultTools(cwd);
 
+	/** Rebuilt on /model so the stated model never goes stale. */
+	const systemPromptFor = (id: string) =>
+		buildSystemPrompt({
+			cwd,
+			model: id,
+			publisher: client.entryFor(id)?.publisher,
+			noProjectContext: args.noProjectContext,
+		});
+
 	const config: AgentConfig = {
 		model,
-		systemPrompt: buildSystemPrompt({ cwd, noProjectContext: args.noProjectContext }),
+		systemPrompt: systemPromptFor(model),
 		tools,
 		thinking: args.thinking ?? fileConfig.thinking ?? "medium",
 		temperature: fileConfig.temperature,
@@ -206,6 +215,7 @@ export async function main(argv: string[]): Promise<number> {
 		session,
 		bash,
 		cwd,
+		systemPromptFor,
 		initialPrompt: args.prompt,
 	});
 }

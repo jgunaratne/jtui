@@ -4,7 +4,7 @@ import { join } from "node:path";
 /** Project instruction files loaded into the system prompt, in priority order. */
 const CONTEXT_FILES = ["JTUI.md", "AGENTS.md", "CLAUDE.md"];
 
-const BASE_PROMPT = `You are jtui, an interactive coding agent running in the user's terminal. You are backed by Gemini on Google Cloud Vertex AI.
+const BASE_PROMPT = `You are jtui, an interactive coding agent running in the user's terminal.
 
 # Behaviour
 
@@ -37,6 +37,10 @@ const BASE_PROMPT = `You are jtui, an interactive coding agent running in the us
 
 export interface SystemPromptOptions {
 	cwd: string;
+	/** Model id serving this session, so the agent can answer accurately. */
+	model?: string;
+	/** Publisher of that model, when known from the catalog. */
+	publisher?: string;
 	/** Extra instructions appended after the project context. */
 	appendix?: string;
 	/** Skip loading JTUI.md / AGENTS.md / CLAUDE.md. */
@@ -58,8 +62,13 @@ export function loadProjectContext(cwd: string): { file: string; content: string
 export function buildSystemPrompt(options: SystemPromptOptions): string {
 	const sections = [BASE_PROMPT];
 
+	// State the real model rather than asserting a provider: jtui serves several,
+	// and a hardcoded claim here is one the agent will repeat to the user.
+	const model = options.model
+		? `\nModel: ${options.model}${options.publisher ? ` (${options.publisher})` : ""}, served through Google Cloud Vertex AI`
+		: "";
 	sections.push(
-		`# Environment\n\nWorking directory: ${options.cwd}\nPlatform: ${process.platform}\nToday's date: ${new Date().toISOString().slice(0, 10)}`,
+		`# Environment\n\nWorking directory: ${options.cwd}\nPlatform: ${process.platform}\nToday's date: ${new Date().toISOString().slice(0, 10)}${model}`,
 	);
 
 	if (!options.noProjectContext) {
