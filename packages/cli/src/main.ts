@@ -167,6 +167,7 @@ export async function main(argv: string[]): Promise<number> {
 		maxOutputTokens: fileConfig.maxOutputTokens,
 		maxTurns: args.maxTurns ?? fileConfig.maxTurns,
 		detectLoops: args.noLoopDetection ? false : fileConfig.detectLoops,
+		compaction: args.noCompaction ? false : fileConfig.compaction,
 	};
 
 	// Resume an existing transcript when asked, otherwise start a fresh one.

@@ -23,6 +23,8 @@ export interface ParsedArgs {
 	all: boolean;
 	/** Disable cutting a turn short when the model repeats itself. */
 	noLoopDetection: boolean;
+	/** Disable summarizing older history as the context fills. */
+	noCompaction: boolean;
 	errors: string[];
 }
 
@@ -53,6 +55,7 @@ Options
       --refresh            re-query the model catalog instead of using the cache
       --all                with 'models', include publishers jtui cannot call
       --no-loop-detection  do not stop a turn when the model repeats itself
+      --no-compaction      do not summarize older history as the context fills
   -h, --help               show this help
       --version            show the version
 
@@ -78,6 +81,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
 		refresh: false,
 		all: false,
 		noLoopDetection: false,
+		noCompaction: false,
 		errors: [],
 	};
 	const positional: string[] = [];
@@ -129,6 +133,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
 				break;
 			case "--no-loop-detection":
 				args.noLoopDetection = true;
+				break;
+			case "--no-compaction":
+				args.noCompaction = true;
 				break;
 			case "-m":
 			case "--model":

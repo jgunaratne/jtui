@@ -181,13 +181,16 @@ Run from source during development with `./jtui-dev.sh` (same arguments).
 | `--no-project-context` | Ignore `JTUI.md` / `AGENTS.md` / `CLAUDE.md` |
 | `--refresh` | Re-query the model catalog instead of using the cache |
 | `--all` | With `models`, include publishers jtui cannot call |
+| `--no-loop-detection` | Do not end a turn when the model repeats itself |
+| `--no-compaction` | Do not summarize older history as the context fills |
 
 ### Interactive keys
 
 `enter` send · `shift+enter` newline (or end the line with `\`) · `esc` interrupt ·
 `ctrl+c` clear input, twice to quit · `ctrl+d` quit · `up`/`down` history
 
-Slash commands: `/help` `/model` `/models [refresh]` `/location` `/clear` `/cost` `/tools` `/cwd` `/exit`
+Slash commands: `/help` `/model` `/models [refresh]` `/location` `/clear` `/compact` `/cost` `/tools`
+`/cwd` `/exit`
 
 ## Authentication
 
@@ -227,6 +230,28 @@ counts and says the cost is unknown.
 
 Session transcripts are written to `.jtui/sessions/*.jsonl` as they happen, so an interrupted run
 is still resumable.
+
+## Context compaction
+
+Long sessions eventually outgrow the model's context window. When the last request passed 75% of the
+window, jtui summarizes everything older than the two most recent user turns and replaces it with
+that summary, so the session keeps going instead of failing at the limit. The status line shows the
+fraction of the window in use.
+
+The cut always lands on a user turn, so no tool result is separated from the call that produced it.
+The summary is written by the same model with no tools and no thinking, and it preserves file paths,
+commands, what has been done and what is still outstanding. A failed summarization is reported and
+the turn continues with history untouched.
+
+`/compact` runs the same pass on demand. Transcripts keep the original messages — the log records
+what actually happened — alongside a marker that resuming replays, so a resumed session comes back
+compacted rather than re-inflated.
+
+Turn it off with `--no-compaction`, or tune it in config:
+
+```json
+{ "compaction": { "threshold": 0.6, "keepRecentTurns": 3 } }
+```
 
 ## Project instructions
 

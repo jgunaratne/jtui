@@ -22,7 +22,18 @@ interface UsageRecord {
 	usage: Usage;
 }
 
-type SessionRecord = SessionHeader | MessageRecord | UsageRecord;
+/**
+ * Marks the point where compaction replaced the first `removed` messages with
+ * `message`. The originals stay in the log — it records what happened — and a
+ * resumed session replays this to arrive at the compacted history.
+ */
+interface CompactionRecord {
+	type: "compaction";
+	removed: number;
+	message: Message;
+}
+
+type SessionRecord = SessionHeader | MessageRecord | UsageRecord | CompactionRecord;
 
 /**
  * Append-only JSONL session log.
@@ -46,6 +57,11 @@ export class Session {
 
 	/** Persist any messages added to `state` since the last call. */
 	sync(state: AgentState): void {
+		// Compaction rewrites the head of the conversation, so the array can
+		// shrink between calls. recordCompaction() realigns, but guard here too so
+		// a host that forgets it logs duplicates rather than dropping everything
+		// from that point on.
+		if (state.messages.length < this.written) this.written = state.messages.length;
 		for (const message of state.messages.slice(this.written)) {
 			this.append({ type: "message", message });
 		}
@@ -61,6 +77,17 @@ export class Session {
 	markWritten(count: number): void {
 		this.written = count;
 	}
+
+	/**
+	 * Note that compaction replaced the first `removed` messages of `state`, so
+	 * resuming rebuilds the compacted history instead of the original.
+	 */
+	recordCompaction(state: AgentState, removed: number): void {
+		const summary = state.messages[0];
+		if (!summary) return;
+		this.append({ type: "compaction", removed, message: summary });
+		this.written = state.messages.length;
+	}
 }
 
 /** Read a session transcript back into agent state. */
@@ -73,6 +100,9 @@ export function loadSession(path: string): AgentState {
 			const record = JSON.parse(line) as SessionRecord;
 			if (record.type === "message") state.messages.push(record.message);
 			if (record.type === "usage") state.totalUsage = record.usage;
+			// Replay the rewrite so a resumed session starts from the summary, not
+			// the history it was meant to replace.
+			if (record.type === "compaction") state.messages.splice(0, record.removed, record.message);
 		} catch {
 			// A partial final line is expected if the process was killed mid-write.
 		}

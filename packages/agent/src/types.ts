@@ -1,4 +1,5 @@
 import type { AssistantMessage, JsonSchema, Message, StopReason, ToolCallContent, Usage, UserContent } from "@jtui/ai";
+import type { CompactionSettings } from "./compaction.ts";
 
 /** Runtime context handed to a tool during execution. */
 export interface ToolContext {
@@ -47,6 +48,8 @@ export type AgentEvent =
 	| { type: "turn_end"; reason: StopReason; usage: Usage }
 	/** The turn was cut short because the model looped. */
 	| { type: "loop_detected"; repeatedUnit: string }
+	| { type: "compaction_start" }
+	| { type: "compacted"; removed: number; summary: string }
 	| { type: "error"; message: string };
 
 export interface AgentConfig {
@@ -67,6 +70,11 @@ export interface AgentConfig {
 	detectLoops?: boolean;
 	/** Repeats of the same output before a turn is judged stuck. Defaults to 5. */
 	loopThreshold?: number;
+	/**
+	 * Summarize older history when the context window fills up. Defaults to on;
+	 * set false to let a long session fail at the limit instead.
+	 */
+	compaction?: CompactionSettings | false;
 }
 
 /** Conversation state, persisted between runs. */

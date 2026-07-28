@@ -10,6 +10,7 @@ import {
 	type UserContent,
 	type VertexClient,
 } from "@jtui/ai";
+import { compact, shouldCompact } from "./compaction.ts";
 import { LoopDetector } from "./loop-detector.ts";
 import type {
 	AgentConfig,
@@ -105,6 +106,19 @@ export async function* runAgent(
 			return;
 		}
 		yield { type: "turn_start", turn };
+
+		// Summarize before building the request, so an over-long history is
+		// shrunk rather than rejected by the API.
+		if (config.compaction !== false && shouldCompact(state, config.model, config.compaction)) {
+			yield { type: "compaction_start" };
+			try {
+				const result = await compact(client, config.model, state, config.compaction, signal);
+				if (result) yield { type: "compacted", removed: result.removed, summary: result.summary };
+			} catch (error) {
+				// A failed summary must not kill the turn; the request may still fit.
+				yield { type: "error", message: `Compaction failed: ${(error as Error).message}` };
+			}
+		}
 
 		const context: Context = {
 			systemPrompt: config.systemPrompt,

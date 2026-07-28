@@ -1,4 +1,12 @@
-import { type AgentConfig, type AgentState, runAgent, type Session, type ToolExecution } from "@jtui/agent";
+import {
+	type AgentConfig,
+	type AgentState,
+	compact,
+	contextUsage,
+	runAgent,
+	type Session,
+	type ToolExecution,
+} from "@jtui/agent";
 import {
 	type CatalogEntry,
 	loadCatalog,
@@ -73,6 +81,7 @@ const HELP = `Commands
   /model [id]        show or switch the model
   /models [refresh]  list models available to this project
   /clear             start a new conversation
+  /compact           summarize earlier history to free context
   /cost              show token usage and estimated cost
   /tools             list available tools
   /cwd               show the shell working directory
@@ -135,6 +144,8 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 			`${client.credentials.project}/${client.credentials.location}`,
 			`${(tokens / 1000).toFixed(1)}k tokens`,
 		];
+		const context = contextUsage(state, config.model);
+		if (context > 0) parts.push(`${Math.round(context * 100)}% ctx`);
 		if (usage.costUsd > 0) parts.push(`$${usage.costUsd.toFixed(4)}`);
 		status.text = parts.join(" · ");
 	};
@@ -298,6 +309,27 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 			case "cwd":
 				emit([`Shell working directory: ${bash.cwd}`]);
 				return true;
+			case "compact": {
+				if (busy) {
+					emit([yellow("Finish or interrupt the current turn first (esc).")]);
+					return true;
+				}
+				emit([dim("Compacting…")]);
+				try {
+					const result = await compact(client, config.model, state, config.compaction || undefined);
+					if (result) {
+						session.recordCompaction(state, result.removed);
+						updateStatus();
+						emit([green(`Compacted ${result.removed} earlier messages into a summary.`)]);
+					} else {
+						emit([dim("Not enough history to compact yet.")]);
+					}
+				} catch (error) {
+					emitError(`Compaction failed: ${(error as Error).message}`);
+				}
+				session.sync(state);
+				return true;
+			}
 			case "location":
 				if (!argument) {
 					emit([
@@ -387,6 +419,17 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 						emit(renderToolResult(event.execution));
 						loader.label = "Thinking";
 						loader.start();
+						break;
+					case "compaction_start":
+						loader.label = "Compacting context";
+						loader.start();
+						break;
+					case "compacted":
+						// Record the rewrite now; waiting until the next sync would log
+						// the messages that follow at the wrong offsets.
+						session.recordCompaction(state, event.removed);
+						emit([dim(`Compacted ${event.removed} earlier messages into a summary.`)]);
+						updateStatus();
 						break;
 					case "loop_detected": {
 						const preview = event.repeatedUnit.split("\n")[0]?.slice(0, 70) ?? "";

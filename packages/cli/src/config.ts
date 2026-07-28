@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { CompactionSettings } from "@jtui/agent";
 import type { PricingTable, ThinkingLevel } from "@jtui/ai";
 
 export interface JtuiConfig {
@@ -15,6 +16,11 @@ export interface JtuiConfig {
 	maxTurns?: number;
 	/** Stop a turn when the model repeats itself. Defaults to true. */
 	detectLoops?: boolean;
+	/**
+	 * Summarize older history as the context window fills. Defaults to on at
+	 * 75% of the window; set false to disable.
+	 */
+	compaction?: CompactionSettings | false;
 	/**
 	 * Per-model token rates, used only for the local cost estimate. jtui ships
 	 * no pricing data because Vertex bills your project's own rates.

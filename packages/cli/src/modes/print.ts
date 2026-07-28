@@ -51,6 +51,11 @@ export async function runPrint(options: PrintOptions): Promise<number> {
 					// Separate consecutive assistant turns in the output stream.
 					if (messageText(event.message).trim().length > 0) process.stdout.write("\n");
 					break;
+				case "compacted":
+					// Record the rewrite before more messages arrive; see interactive mode.
+					session.recordCompaction(state, event.removed);
+					if (options.verbose) process.stderr.write(`· compacted ${event.removed} earlier messages\n`);
+					break;
 				case "loop_detected":
 					process.stderr.write("Stopped: the model was repeating itself.\n");
 					failed = true;

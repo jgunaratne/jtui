@@ -274,3 +274,10 @@ describe("StreamingView driven by a real TUI", () => {
 		expect(() => view.finish(80)).not.toThrow();
 	});
 });
+
+describe("compaction wiring", () => {
+	it("parses the disable flag", () => {
+		expect(parseArgs(["--no-compaction"]).noCompaction).toBe(true);
+		expect(parseArgs([]).noCompaction).toBe(false);
+	});
+});
