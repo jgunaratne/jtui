@@ -22,7 +22,7 @@ import type {
 	ToolOutput,
 } from "./types.ts";
 
-const DEFAULT_MAX_TURNS = 50;
+const DEFAULT_MAX_TURNS = 100;
 
 /** Create an empty conversation. */
 export function createState(): AgentState {

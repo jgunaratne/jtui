@@ -47,7 +47,7 @@ Options
       --project <id>       Google Cloud project
       --location <region>  Vertex AI location (default: us-central1)
       --thinking <level>   off | low | medium | high (default: medium)
-      --max-turns <n>      stop after n assistant turns
+      --max-turns <n>      stop after n assistant turns (default: 100)
       --credentials <path> service account key file
   -c, --continue           resume the most recent session here
       --resume <id>        resume a specific session

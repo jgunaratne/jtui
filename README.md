@@ -175,7 +175,7 @@ Run from source during development with `./jtui-dev.sh` (same arguments).
 | `--project <id>` | Google Cloud project |
 | `--location <region>` | Vertex location (default `us-central1`; `global` also works) |
 | `--thinking <level>` | `off`, `low`, `medium`, `high` (default `medium`) |
-| `--max-turns <n>` | Stop after n assistant turns |
+| `--max-turns <n>` | Stop after n assistant turns (default `100`) |
 | `--credentials <path>` | Service account key file |
 | `-c, --continue` / `--resume <id>` | Resume a session |
 | `--no-project-context` | Ignore `JTUI.md` / `AGENTS.md` / `CLAUDE.md` |
@@ -218,7 +218,7 @@ on top:
   "model": "claude-opus-4-5",
   "location": "global",
   "thinking": "high",
-  "maxTurns": 30,
+  "maxTurns": 100,
   "pricing": {
     "claude-opus-4-5": { "inputPerMillion": 5, "outputPerMillion": 25, "cachedInputPerMillion": 0.5 }
   }
