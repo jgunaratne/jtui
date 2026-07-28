@@ -39,7 +39,8 @@ export class UnsupportedModelError extends Error {
 export class VertexClient {
 	readonly credentials: VertexCredentials;
 	catalog: ModelCatalog | undefined;
-	private readonly pricing: PricingTable;
+	/** Rates in use, so a client rebuilt for another region can inherit them. */
+	readonly pricing: PricingTable;
 	private readonly gemini: GeminiApi;
 	private readonly anthropic: AnthropicApi;
 

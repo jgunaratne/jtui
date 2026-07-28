@@ -148,6 +148,15 @@ can still return 404. The error message says so and suggests the fix.
 Switching model mid-session with `/model` is safe across publishers — reasoning blocks signed by one
 provider are dropped rather than replayed to another, which would be rejected.
 
+Region can be switched the same way with `/location <region>`, which rebuilds the client and
+rediscovers models without losing the conversation. It warns if the current model is not published
+in the new region. This is the quickest way out of a `not servable in region` error:
+
+```
+❯ /location global
+Location set to global
+```
+
 ### Adding a publisher
 
 `packages/ai/src/catalog.ts` maps publishers to API adapters. Publishers without an adapter are
@@ -178,7 +187,7 @@ Run from source during development with `./jtui-dev.sh` (same arguments).
 `enter` send · `shift+enter` newline (or end the line with `\`) · `esc` interrupt ·
 `ctrl+c` clear input, twice to quit · `ctrl+d` quit · `up`/`down` history
 
-Slash commands: `/help` `/model` `/models [refresh]` `/clear` `/cost` `/tools` `/cwd` `/exit`
+Slash commands: `/help` `/model` `/models [refresh]` `/location` `/clear` `/cost` `/tools` `/cwd` `/exit`
 
 ## Authentication
 

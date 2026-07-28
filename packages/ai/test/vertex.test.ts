@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { convertMessages, convertTools } from "../src/api/gemini.ts";
+import { VertexClient } from "../src/client.ts";
 import { formatVertexError } from "../src/errors.ts";
 import { calculateCost, getCapabilities, inferApi } from "../src/models.ts";
 import type { Message, Tool } from "../src/types.ts";
@@ -210,5 +211,25 @@ describe("formatVertexError", () => {
 
 	it("passes unrecognised errors through", () => {
 		expect(formatVertexError(new Error("socket hang up"), credentials)).toBe("socket hang up");
+	});
+});
+
+describe("VertexClient rebuild", () => {
+	// /location rebuilds the client because both adapters bind the region when
+	// they are constructed; rates must survive that.
+	it("carries pricing onto a client rebuilt for another region", () => {
+		const pricing = { "claude-opus-4-5": { inputPerMillion: 5, outputPerMillion: 25 } };
+		const first = new VertexClient(credentials, { pricing });
+		const second = new VertexClient({ ...first.credentials, location: "us-east5" }, { pricing: first.pricing });
+
+		expect(second.credentials.location).toBe("us-east5");
+		expect(second.credentials.project).toBe(first.credentials.project);
+		expect(second.pricing).toEqual(pricing);
+	});
+
+	it("routes by id after a rebuild", () => {
+		const client = new VertexClient({ ...credentials, location: "global" });
+		expect(client.resolveApi("claude-sonnet-4-5")).toBe("anthropic");
+		expect(client.resolveApi("gemini-2.5-pro")).toBe("gemini");
 	});
 });

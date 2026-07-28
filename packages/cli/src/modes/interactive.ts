@@ -5,7 +5,7 @@ import {
 	messageText,
 	supportedModels,
 	UnsupportedModelError,
-	type VertexClient,
+	VertexClient,
 } from "@jtui/ai";
 import {
 	type Component,
@@ -74,6 +74,7 @@ const HELP = `Commands
   /cost              show token usage and estimated cost
   /tools             list available tools
   /cwd               show the shell working directory
+  /location [region] show or switch the Vertex region
   /exit              quit
 
 Keys
@@ -86,7 +87,9 @@ Keys
 
 /** Run the interactive terminal UI until the user exits. */
 export async function runInteractive(options: InteractiveOptions): Promise<number> {
-	const { client, config, state, session, bash, cwd } = options;
+	const { config, state, session, bash, cwd } = options;
+	// Reassigned by /location: the region is fixed at client construction.
+	let client = options.client;
 	const terminal = new ProcessTerminal();
 	const tui = new TUI(terminal);
 
@@ -205,6 +208,46 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 		emit([green(`Model set to ${id}`)]);
 	};
 
+	/**
+	 * Switch Vertex region. Both API clients bind the region when constructed,
+	 * so this rebuilds the client and rediscovers models for the new region.
+	 */
+	const setLocation = async (location: string) => {
+		if (busy) {
+			emit([yellow("Finish or interrupt the current turn first (esc).")]);
+			return;
+		}
+		if (location === client.credentials.location) {
+			emit([dim(`Already using ${location}.`)]);
+			return;
+		}
+
+		emit([dim(`Switching to ${location}…`)]);
+		const credentials = { ...client.credentials, location };
+		try {
+			const catalog = await loadCatalog(credentials);
+			client = new VertexClient(credentials, { catalog, pricing: client.pricing });
+		} catch (error) {
+			emitError(`Could not switch to "${location}": ${(error as Error).message}`);
+			return;
+		}
+
+		// Refresh the status text before emitting: emit triggers the render that
+		// paints it, so updating afterwards leaves the bar a frame stale.
+		updateStatus();
+		emit([green(`Location set to ${location}`)]);
+
+		// The model may not be published in the new region; say so rather than
+		// letting the next turn fail with a raw 404.
+		const available = client.catalog ? supportedModels(client.catalog) : [];
+		if (available.length > 0 && !available.some((entry) => entry.id === config.model)) {
+			emit([
+				yellow(`${config.model} is not listed in ${location}.`),
+				dim("  Pick another with /model, or switch back."),
+			]);
+		}
+	};
+
 	/** Returns true when the input was handled as a command. */
 	const handleCommand = async (input: string): Promise<boolean> => {
 		if (!input.startsWith("/")) return false;
@@ -248,6 +291,16 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 				return true;
 			case "cwd":
 				emit([`Shell working directory: ${bash.cwd}`]);
+				return true;
+			case "location":
+				if (!argument) {
+					emit([
+						`Vertex region: ${client.credentials.location}`,
+						dim("  /location <region> to switch, e.g. global, us-central1, us-east5"),
+					]);
+					return true;
+				}
+				await setLocation(argument);
 				return true;
 			case "model":
 				if (!argument) {
