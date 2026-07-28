@@ -57,10 +57,10 @@ class StatusBar implements Component {
 
 /** Live view of the tools running in the current turn. */
 class ToolStatus implements Component {
-	private readonly active = new Map<string, string>();
+	private readonly active = new Map<string, { summary: string; startedAt: number }>();
 
 	start(id: string, summary: string): void {
-		this.active.set(id, summary);
+		this.active.set(id, { summary, startedAt: Date.now() });
 	}
 
 	end(id: string): void {
@@ -72,7 +72,12 @@ class ToolStatus implements Component {
 	}
 
 	render(width: number): string[] {
-		return [...this.active.values()].map((summary) => truncateToWidth(`${yellow("●")} ${dim(summary)}`, width));
+		return [...this.active.values()].map((entry) => {
+			const seconds = Math.floor((Date.now() - entry.startedAt) / 1000);
+			// Elapsed time is the signal that a long tool is still running.
+			const elapsed = seconds > 0 ? dim(`  ${seconds}s`) : "";
+			return truncateToWidth(`${yellow("●")} ${dim(entry.summary)}${elapsed}`, width);
+		});
 	}
 }
 
@@ -390,8 +395,8 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 	const runTurn = async (prompt: string): Promise<void> => {
 		busy = true;
 		abortController = new AbortController();
-		loader.label = "Thinking";
-		loader.start();
+		loader.begin("Thinking");
+		const turnStartedAt = Date.now();
 		tui.requestRender();
 
 		try {
@@ -402,7 +407,7 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 						streaming.append(event.delta);
 						break;
 					case "thinking_delta":
-						loader.label = "Thinking";
+						loader.begin("Thinking");
 						break;
 					case "assistant_message":
 						streaming.finish(terminal.columns);
@@ -411,18 +416,18 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 						updateStatus();
 						break;
 					case "tool_start":
-						loader.stop();
+						// Keep animating: the tool run is the longest, quietest part
+						// of a turn, and a frozen screen reads as a hang.
+						loader.begin(event.summary);
 						toolStatus.start(event.toolCall.id, event.summary);
 						break;
 					case "tool_end":
 						toolStatus.end(event.execution.toolCall.id);
 						emit(renderToolResult(event.execution));
-						loader.label = "Thinking";
-						loader.start();
+						loader.begin("Thinking");
 						break;
 					case "compaction_start":
-						loader.label = "Compacting context";
-						loader.start();
+						loader.begin("Compacting context");
 						break;
 					case "compacted":
 						// Record the rewrite now; waiting until the next sync would log
@@ -443,9 +448,14 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 					case "error":
 						emitError(event.message);
 						break;
-					case "turn_end":
+					case "turn_end": {
 						if (event.reason === "aborted") emit([yellow("Interrupted.")]);
+						const seconds = (Date.now() - turnStartedAt) / 1000;
+						// Says "finished" rather than leaving the user guessing whether
+						// a quiet screen means working or done.
+						if (seconds >= 2) emit([dim(`— done in ${seconds.toFixed(1)}s`)]);
 						break;
+					}
 				}
 				tui.requestRender();
 			}

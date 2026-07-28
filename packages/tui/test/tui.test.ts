@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { Editor } from "../src/components/editor.ts";
+import { Loader } from "../src/components/loader.ts";
 import { Text } from "../src/components/text.ts";
 import { parseKey, splitKeySequences } from "../src/keys.ts";
 import { MemoryTerminal } from "../src/terminal.ts";
@@ -287,5 +288,21 @@ describe("Text", () => {
 		const rows = text.render(12);
 		expect(rows[0]?.startsWith("- ")).toBe(true);
 		expect(rows[1]?.startsWith("  ")).toBe(true);
+	});
+});
+
+describe("Loader", () => {
+	it("relabels and keeps running via begin()", () => {
+		const loader = new Loader({ intervalMs: 10_000 });
+		loader.begin("Thinking");
+		expect(loader.running).toBe(true);
+		expect(stripAnsi(loader.render().join(""))).toContain("Thinking");
+
+		// A tool starting must not stop the animation, only rename it.
+		loader.begin("bash npm test");
+		expect(loader.running).toBe(true);
+		expect(stripAnsi(loader.render().join(""))).toContain("bash npm test");
+		loader.stop();
+		expect(loader.render()).toEqual([]);
 	});
 });

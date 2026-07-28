@@ -74,6 +74,17 @@ Do not run `npm run build` unless you are testing the packaged output.
 - Claude on Vertex: adaptive thinking plus `output_config.effort` on 4.6+, `budget_tokens` below
   that, and never send `temperature`/`top_p`/`top_k` — current models reject them.
 
+## Long-running turns
+
+- The spinner must keep animating for the whole turn except while text is streaming. A tool run is
+  the longest and quietest phase, and a frozen screen reads as a hang — use `loader.begin(label)`,
+  never `loader.stop()`, when work continues.
+- Compaction rewrites the head of `state.messages`. `Session.sync` tracks an index, so a host that
+  compacts must call `session.recordCompaction(state, removed)` as soon as it sees the `compacted`
+  event; otherwise later messages are logged at the wrong offsets and silently lost.
+- `findCutPoint` must only cut at a user turn; cutting elsewhere orphans a tool result from its call
+  and both APIs reject it.
+
 ## Google Cloud
 
 - Authentication goes through Application Default Credentials. Never add an API-key code path

@@ -269,6 +269,26 @@ falls back to a pure-Node scan.
 There is no permission prompt: tools run with the privileges of the user who started jtui. Run it in
 a container or VM if you need a real boundary.
 
+## Long sessions
+
+The status bar shows how full the context window is (`38% ctx`). At 75% jtui summarizes the older
+part of the conversation and continues, keeping the most recent turns verbatim:
+
+```
+Compacted 24 earlier messages into a summary.
+```
+
+The cut always lands on a user turn, so a tool call is never separated from its result. Run it early
+with `/compact`, tune it, or turn it off:
+
+```json
+{ "compaction": { "threshold": 0.6, "keepRecentTurns": 4 } }
+```
+
+`--no-compaction` disables it for one run. The session transcript keeps the original messages and
+records the compaction alongside them, so `jtui -c` resumes in the compacted state rather than
+re-inflating history the model no longer has.
+
 ## Runaway output
 
 Models occasionally get stuck repeating a sentence until they hit the token limit. jtui watches

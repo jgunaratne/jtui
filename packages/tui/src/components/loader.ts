@@ -27,6 +27,13 @@ export class Loader implements Component {
 		this.onFrame = options.onFrame;
 	}
 
+	/** Start (or relabel) the spinner and restart its elapsed clock. */
+	begin(label: string): void {
+		this.label = label;
+		this.startedAt = Date.now();
+		this.start();
+	}
+
 	start(): void {
 		if (this.timer) return;
 		this.startedAt = Date.now();
