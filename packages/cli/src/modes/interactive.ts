@@ -110,6 +110,8 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 	const tui = new TUI(terminal);
 
 	const streaming = new StreamingView((lines) => tui.addStatic(lines));
+	// Reasoning is streamed dim, above the answer it precedes.
+	const thinking = new StreamingView((lines) => tui.addStatic(lines), dim);
 	const toolStatus = new ToolStatus();
 	const loader = new Loader({ label: "Thinking", onFrame: () => tui.requestRender() });
 	const status = new StatusBar();
@@ -155,7 +157,7 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 		status.text = parts.join(" · ");
 	};
 
-	tui.root.add(streaming, toolStatus, loader, editor, status, overlay);
+	tui.root.add(thinking, streaming, toolStatus, loader, editor, status, overlay);
 	updateStatus();
 
 	/** Write a block of lines into scrollback with a blank line after it. */
@@ -399,15 +401,25 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 		const turnStartedAt = Date.now();
 		tui.requestRender();
 
+		// Commit any streamed reasoning to scrollback, with a blank line to set
+		// it off from whatever follows (an answer or a tool result).
+		const flushThinking = () => {
+			if (thinking.isEmpty) return;
+			thinking.finish(terminal.columns);
+			tui.addStatic([""]);
+		};
+
 		try {
 			for await (const event of runAgent(client, config, state, prompt, abortController.signal)) {
 				switch (event.type) {
 					case "text_delta":
 						loader.stop();
+						flushThinking();
 						streaming.append(event.delta);
 						break;
 					case "thinking_delta":
-						loader.begin("Thinking");
+						loader.stop();
+						thinking.append(event.delta);
 						break;
 					case "assistant_message":
 						streaming.finish(terminal.columns);
@@ -416,6 +428,9 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 						updateStatus();
 						break;
 					case "tool_start":
+						// A turn may reason and then call a tool without any answer
+						// text, so commit that reasoning before the tool result lands.
+						flushThinking();
 						// Keep animating: the tool run is the longest, quietest part
 						// of a turn, and a frozen screen reads as a hang.
 						loader.begin(event.summary);
@@ -464,6 +479,7 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 		} finally {
 			loader.stop();
 			toolStatus.clear();
+			flushThinking();
 			streaming.finish(terminal.columns);
 			session.sync(state);
 			busy = false;

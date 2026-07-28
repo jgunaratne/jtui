@@ -12,9 +12,11 @@ export class StreamingView implements Component {
 	private committedLines = 0;
 	private lastWidth = 0;
 	private readonly commit: (lines: string[]) => void;
+	private readonly style: (line: string) => string;
 
-	constructor(commit: (lines: string[]) => void) {
+	constructor(commit: (lines: string[]) => void, style?: (line: string) => string) {
 		this.commit = commit;
+		this.style = style ?? ((line) => line);
 	}
 
 	get isEmpty(): boolean {
@@ -25,16 +27,20 @@ export class StreamingView implements Component {
 		this.text += delta;
 	}
 
+	private renderLines(width: number): string[] {
+		return renderMarkdown(this.text, width).map(this.style);
+	}
+
 	render(width: number): string[] {
 		if (this.text.length === 0) return [];
 		// A width change invalidates previously committed line boundaries, so
 		// stop committing and render the remainder in place.
 		if (this.lastWidth !== 0 && this.lastWidth !== width) {
-			return renderMarkdown(this.text, width).slice(this.committedLines);
+			return this.renderLines(width).slice(this.committedLines);
 		}
 		this.lastWidth = width;
 
-		const lines = renderMarkdown(this.text, width);
+		const lines = this.renderLines(width);
 		// The final line may still grow, so it is never committed here.
 		const finalized = lines.slice(this.committedLines, Math.max(this.committedLines, lines.length - 1));
 		if (finalized.length > 0) {
@@ -50,7 +56,7 @@ export class StreamingView implements Component {
 	/** Flush the remaining tail and reset for the next message. */
 	finish(width: number): void {
 		if (this.text.length === 0) return;
-		const lines = renderMarkdown(this.text, width);
+		const lines = this.renderLines(width);
 		const remaining = lines.slice(this.committedLines);
 		if (remaining.length > 0) this.commit(remaining);
 		this.reset();
