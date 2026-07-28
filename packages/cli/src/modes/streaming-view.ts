@@ -38,8 +38,11 @@ export class StreamingView implements Component {
 		// The final line may still grow, so it is never committed here.
 		const finalized = lines.slice(this.committedLines, Math.max(this.committedLines, lines.length - 1));
 		if (finalized.length > 0) {
-			this.commit(finalized);
+			// Advance before committing: `commit` writes to the host, which may
+			// render again, and that nested render must not see these lines as
+			// still pending or it commits them a second time.
 			this.committedLines += finalized.length;
+			this.commit(finalized);
 		}
 		return lines.slice(this.committedLines);
 	}

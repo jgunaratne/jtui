@@ -87,6 +87,10 @@ export class TUI {
 	private focused: Component | undefined;
 	private renderScheduled = false;
 	private running = false;
+	/** True while a frame is being composed; guards against re-entrant renders. */
+	private rendering = false;
+	/** Static lines committed from inside render(), flushed once it finishes. */
+	private pendingStatic: string[] = [];
 	private pasteBuffer: string | undefined;
 
 	constructor(terminal: Terminal) {
@@ -152,6 +156,18 @@ export class TUI {
 	 * messages and tool output stay selectable and cheap.
 	 */
 	addStatic(lines: string[]): void {
+		if (lines.length === 0) return;
+		if (this.rendering) {
+			// A component committed lines from inside its own render (the
+			// streaming view does this as output finalizes). Writing now would
+			// corrupt the half-composed frame and recurse, so queue it.
+			this.pendingStatic.push(...lines);
+			return;
+		}
+		this.writeStatic(lines);
+	}
+
+	private writeStatic(lines: string[]): void {
 		let buffer = this.moveToRegionStart() + ERASE_BELOW;
 		for (const line of lines) buffer += `${ERASE_LINE + line}\r\n`;
 		this.terminal.write(buffer);
@@ -163,7 +179,23 @@ export class TUI {
 
 	/** Render the dynamic region, rewriting only the rows that changed. */
 	render(): void {
-		if (!this.running) return;
+		if (!this.running || this.rendering) return;
+		this.rendering = true;
+		try {
+			this.renderFrame();
+		} finally {
+			this.rendering = false;
+		}
+		// Flush anything a component committed while the frame was composing.
+		// Each flush advances the committer's own state, so this terminates.
+		while (this.pendingStatic.length > 0) {
+			const pending = this.pendingStatic;
+			this.pendingStatic = [];
+			this.writeStatic(pending);
+		}
+	}
+
+	private renderFrame(): void {
 		const width = Math.max(1, this.terminal.columns);
 		const height = Math.max(1, this.terminal.rows);
 

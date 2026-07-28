@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stripAnsi } from "@jtui/tui";
+import { MemoryTerminal, stripAnsi, TUI } from "@jtui/tui";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseArgs } from "../src/args.ts";
 import { pickDefaultModel } from "../src/config.ts";
@@ -187,5 +187,67 @@ describe("pickDefaultModel", () => {
 
 	it("still returns something for unrecognised ids", () => {
 		expect(pickDefaultModel(["some-new-model"])).toBe("some-new-model");
+	});
+});
+
+describe("StreamingView driven by a real TUI", () => {
+	/**
+	 * Regression: committing from inside render() used to re-enter TUI.render
+	 * through addStatic, which re-entered StreamingView.render with a stale
+	 * committed count and recursed until the stack blew. Only reproduces with
+	 * multi-line output, which single-line replies never produced.
+	 */
+	it("does not recurse when commits happen during render", () => {
+		const terminal = new MemoryTerminal(60, 20);
+		const tui = new TUI(terminal);
+		const view = new StreamingView((lines) => tui.addStatic(lines));
+		tui.root.add(view);
+		tui.start();
+
+		view.append("line one\nline two\nline three\nline four\ntail");
+		expect(() => tui.render()).not.toThrow();
+
+		const output = stripAnsi(terminal.text());
+		expect(output).toContain("line one");
+		expect(output).toContain("line four");
+	});
+
+	it("commits each line to scrollback exactly once", () => {
+		const terminal = new MemoryTerminal(60, 20);
+		const tui = new TUI(terminal);
+		// Record what reaches scrollback while still driving the real TUI, so
+		// the re-entrant path is exercised. The uncommitted tail is redrawn in
+		// the live region every frame, so terminal bytes are not the measure —
+		// what got committed is.
+		const committed: string[] = [];
+		const view = new StreamingView((lines) => {
+			committed.push(...lines.map(stripAnsi));
+			tui.addStatic(lines);
+		});
+		tui.root.add(view);
+		tui.start();
+
+		for (const chunk of ["alpha\n", "beta\n", "gamma\n", "delta"]) {
+			view.append(chunk);
+			tui.render();
+		}
+		view.finish(60);
+
+		expect(committed.filter((line) => line.length > 0)).toEqual(["alpha", "beta", "gamma", "delta"]);
+	});
+
+	it("survives a long repetitive response", () => {
+		const terminal = new MemoryTerminal(80, 24);
+		const tui = new TUI(terminal);
+		const view = new StreamingView((lines) => tui.addStatic(lines));
+		tui.root.add(view);
+		tui.start();
+
+		// A model stuck in a loop: the shape that originally crashed the TUI.
+		for (let index = 0; index < 200; index++) {
+			view.append("I don't have that detail exposed to me, only the provider.\n");
+			expect(() => tui.render()).not.toThrow();
+		}
+		expect(() => view.finish(80)).not.toThrow();
 	});
 });
