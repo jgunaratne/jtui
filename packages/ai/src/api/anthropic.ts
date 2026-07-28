@@ -1,0 +1,313 @@
+import type Anthropic from "@anthropic-ai/sdk";
+import { AnthropicVertex } from "@anthropic-ai/vertex-sdk";
+import type { VertexCredentials } from "../auth.ts";
+import { formatVertexError } from "../errors.ts";
+import { calculateCost, getCapabilities, inferApi, type ModelPricing } from "../models.ts";
+import type {
+	AssistantContent,
+	AssistantMessage,
+	Context,
+	Message,
+	StopReason,
+	StreamEvent,
+	StreamOptions,
+	ThinkingLevel,
+	Tool,
+	ToolCallContent,
+	Usage,
+} from "../types.ts";
+
+/** Effort levels for models that take `output_config.effort`. */
+const EFFORT: Record<ThinkingLevel, string> = {
+	off: "low",
+	low: "low",
+	medium: "medium",
+	high: "high",
+};
+
+/** Token budgets for models that predate adaptive thinking. */
+const THINKING_BUDGETS: Record<ThinkingLevel, number> = {
+	off: 0,
+	low: 2_048,
+	medium: 8_192,
+	high: 16_384,
+};
+
+/** Convert our tool definitions into Anthropic tool schemas. */
+export function convertTools(tools: Tool[]): Anthropic.Tool[] {
+	return tools.map((tool) => ({
+		name: tool.name,
+		description: tool.description,
+		input_schema: tool.parameters as Anthropic.Tool.InputSchema,
+	}));
+}
+
+function assistantBlocks(content: AssistantContent[], replayThinking: boolean): Anthropic.ContentBlockParam[] {
+	const blocks: Anthropic.ContentBlockParam[] = [];
+	for (const block of content) {
+		if (block.type === "thinking") {
+			// Thinking must be replayed verbatim, signature included, or the
+			// model rejects the turn. A signature minted by another provider is
+			// meaningless here, so those blocks are dropped instead.
+			if (replayThinking && block.signature) {
+				blocks.push({ type: "thinking", thinking: block.text, signature: block.signature });
+			}
+		} else if (block.type === "text") {
+			if (block.text.length > 0) blocks.push({ type: "text", text: block.text });
+		} else {
+			blocks.push({ type: "tool_use", id: block.id, name: block.name, input: block.arguments });
+		}
+	}
+	return blocks;
+}
+
+/**
+ * Convert the conversation into Anthropic messages.
+ *
+ * Consecutive tool results are merged into one user turn, which is required
+ * when the model requested several tools in parallel.
+ */
+export function convertMessages(messages: Message[]): Anthropic.MessageParam[] {
+	const out: Anthropic.MessageParam[] = [];
+	for (const message of messages) {
+		if (message.role === "user") {
+			const content: Anthropic.ContentBlockParam[] =
+				typeof message.content === "string"
+					? [{ type: "text", text: message.content }]
+					: message.content.map((block) =>
+							block.type === "text"
+								? ({ type: "text", text: block.text } as const)
+								: ({
+										type: "image",
+										source: {
+											type: "base64",
+											media_type: block.mimeType as "image/png",
+											data: block.data,
+										},
+									} as const),
+						);
+			out.push({ role: "user", content });
+			continue;
+		}
+		if (message.role === "assistant") {
+			// Turns produced by a Gemini model can appear here after /model.
+			const sameProvider = message.model === undefined || inferApi(message.model) === "anthropic";
+			const blocks = assistantBlocks(message.content, sameProvider);
+			if (blocks.length > 0) out.push({ role: "assistant", content: blocks });
+			continue;
+		}
+
+		const text = message.content
+			.filter((block) => block.type === "text")
+			.map((block) => block.text)
+			.join("\n");
+		const result: Anthropic.ToolResultBlockParam = {
+			type: "tool_result",
+			tool_use_id: message.toolCallId,
+			content: text,
+			is_error: message.isError,
+		};
+		const previous = out.at(-1);
+		if (previous?.role === "user" && Array.isArray(previous.content) && previous.content[0]?.type === "tool_result") {
+			(previous.content as Anthropic.ContentBlockParam[]).push(result);
+		} else {
+			out.push({ role: "user", content: [result] });
+		}
+	}
+	return out;
+}
+
+function mapStopReason(reason: string | null | undefined, hasToolCalls: boolean): StopReason {
+	if (hasToolCalls || reason === "tool_use") return "toolUse";
+	switch (reason) {
+		case "max_tokens":
+			return "maxTokens";
+		case "refusal":
+			return "safety";
+		default:
+			return "stop";
+	}
+}
+
+/** Claude-on-Vertex adapter, speaking the Anthropic Messages API. */
+export class AnthropicApi {
+	readonly credentials: VertexCredentials;
+	private readonly client: AnthropicVertex;
+	private readonly pricing: (model: string) => ModelPricing | undefined;
+
+	constructor(credentials: VertexCredentials, pricing: (model: string) => ModelPricing | undefined) {
+		this.credentials = credentials;
+		this.pricing = pricing;
+		this.client = new AnthropicVertex({
+			projectId: credentials.project,
+			region: credentials.location,
+		});
+	}
+
+	/**
+	 * Stream one assistant turn.
+	 *
+	 * Never throws: failures and cancellation are reported as a final `done`
+	 * event whose message carries `stopReason` "error" or "aborted".
+	 */
+	async *stream(model: string, context: Context, options: StreamOptions = {}): AsyncGenerator<StreamEvent> {
+		yield { type: "start", model };
+
+		const capabilities = getCapabilities(model, "anthropic");
+		const level = options.thinking ?? "medium";
+		const content: AssistantContent[] = [];
+		const toolCalls: ToolCallContent[] = [];
+		let usage: Usage = { input: 0, output: 0, cacheRead: 0, thinking: 0, costUsd: 0 };
+		let stopReason: string | null | undefined;
+
+		try {
+			const request: Record<string, unknown> = {
+				model,
+				max_tokens: options.maxOutputTokens ?? capabilities.maxOutputTokens,
+				messages: convertMessages(context.messages),
+				...(context.systemPrompt ? { system: context.systemPrompt } : {}),
+				...(context.tools?.length ? { tools: convertTools(context.tools) } : {}),
+			};
+
+			// Newer models take adaptive thinking plus an effort level and reject
+			// a token budget; older ones are the reverse.
+			if (capabilities.thinking === "anthropic-adaptive") {
+				request.thinking = { type: "adaptive", display: "summarized" };
+				request.output_config = { effort: EFFORT[level] };
+			} else if (level !== "off") {
+				request.thinking = { type: "enabled", budget_tokens: THINKING_BUDGETS[level] };
+			}
+			// Sampling parameters are rejected on current Claude models, so jtui
+			// never sends them; behaviour is steered by the system prompt.
+
+			const stream = this.client.messages.stream(request as never, {
+				...(options.signal ? { signal: options.signal } : {}),
+			});
+
+			let blockType: string | undefined;
+			let thinkingText = "";
+			let textBuffer = "";
+
+			for await (const event of stream) {
+				if (options.signal?.aborted) break;
+				switch (event.type) {
+					case "content_block_start": {
+						blockType = event.content_block.type;
+						if (event.content_block.type === "tool_use") {
+							// Arguments arrive as streamed JSON; collected at block stop.
+							toolCalls.push({
+								type: "toolCall",
+								id: event.content_block.id,
+								name: event.content_block.name,
+								arguments: {},
+							});
+						}
+						break;
+					}
+					case "content_block_delta": {
+						const delta = event.delta as { type: string; text?: string; thinking?: string };
+						if (delta.type === "text_delta" && delta.text) {
+							textBuffer += delta.text;
+							yield { type: "text_delta", delta: delta.text };
+						} else if (delta.type === "thinking_delta" && delta.thinking) {
+							thinkingText += delta.thinking;
+							yield { type: "thinking_delta", delta: delta.thinking };
+						}
+						break;
+					}
+					case "content_block_stop": {
+						if (blockType === "thinking" && thinkingText.length > 0) {
+							content.push({ type: "thinking", text: thinkingText });
+							thinkingText = "";
+						} else if (blockType === "text" && textBuffer.length > 0) {
+							content.push({ type: "text", text: textBuffer });
+							textBuffer = "";
+						}
+						blockType = undefined;
+						break;
+					}
+					case "message_delta": {
+						stopReason = event.delta.stop_reason;
+						break;
+					}
+				}
+			}
+
+			if (options.signal?.aborted) {
+				yield { type: "done", message: this.finish(content, "aborted", usage, model) };
+				return;
+			}
+
+			// The assembled message carries complete tool inputs, thinking
+			// signatures, and final usage.
+			const final = await stream.finalMessage();
+			usage = this.readUsage(final.usage, model);
+			content.length = 0;
+			toolCalls.length = 0;
+			for (const block of final.content) {
+				if (block.type === "text") {
+					content.push({ type: "text", text: block.text });
+				} else if (block.type === "thinking") {
+					content.push({ type: "thinking", text: block.thinking, signature: block.signature });
+				} else if (block.type === "tool_use") {
+					const call: ToolCallContent = {
+						type: "toolCall",
+						id: block.id,
+						name: block.name,
+						arguments: (block.input ?? {}) as Record<string, unknown>,
+					};
+					toolCalls.push(call);
+					content.push(call);
+					yield { type: "tool_call", toolCall: call };
+				}
+			}
+
+			// A refusal is a successful response with no usable content.
+			if (final.stop_reason === "refusal") {
+				const message = this.finish(content, "safety", usage, model);
+				message.errorMessage = "The model declined this request (safety classifiers).";
+				yield { type: "done", message };
+				return;
+			}
+
+			yield {
+				type: "done",
+				message: this.finish(
+					content,
+					mapStopReason(final.stop_reason ?? stopReason, toolCalls.length > 0),
+					usage,
+					model,
+				),
+			};
+		} catch (error) {
+			if (options.signal?.aborted || isAbortError(error)) {
+				yield { type: "done", message: this.finish(content, "aborted", usage, model) };
+				return;
+			}
+			const message = this.finish(content, "error", usage, model);
+			message.errorMessage = formatVertexError(error, this.credentials, model);
+			yield { type: "done", message };
+		}
+	}
+
+	private finish(content: AssistantContent[], stopReason: StopReason, usage: Usage, model: string): AssistantMessage {
+		return { role: "assistant", content: [...content], stopReason, usage, model };
+	}
+
+	private readUsage(raw: Anthropic.Usage, model: string): Usage {
+		const usage: Usage = {
+			input: (raw.input_tokens ?? 0) + (raw.cache_creation_input_tokens ?? 0) + (raw.cache_read_input_tokens ?? 0),
+			output: raw.output_tokens ?? 0,
+			cacheRead: raw.cache_read_input_tokens ?? 0,
+			// Anthropic bills thinking as output and does not report it separately.
+			thinking: 0,
+			costUsd: 0,
+		};
+		usage.costUsd = calculateCost(this.pricing(model), usage);
+		return usage;
+	}
+}
+
+function isAbortError(error: unknown): boolean {
+	return error instanceof Error && (error.name === "AbortError" || error.message.includes("aborted"));
+}

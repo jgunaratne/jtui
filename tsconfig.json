@@ -1,0 +1,20 @@
+{
+	"extends": "./tsconfig.base.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"paths": {
+			"@jtui/tui": ["./packages/tui/src/index.ts"],
+			"@jtui/tui/*": ["./packages/tui/src/*"],
+			"@jtui/ai": ["./packages/ai/src/index.ts"],
+			"@jtui/ai/*": ["./packages/ai/src/*"],
+			"@jtui/agent": ["./packages/agent/src/index.ts"],
+			"@jtui/agent/*": ["./packages/agent/src/*"],
+			"@jtui/cli": ["./packages/cli/src/index.ts"],
+			"@jtui/cli/*": ["./packages/cli/src/*"]
+		}
+	},
+	"include": ["packages/*/src/**/*", "packages/*/test/**/*"],
+	"exclude": ["**/dist/**", "node_modules"]
+}

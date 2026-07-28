@@ -1,0 +1,27 @@
+{
+	"name": "jtui-monorepo",
+	"private": true,
+	"type": "module",
+	"version": "0.1.0",
+	"workspaces": [
+		"packages/*"
+	],
+	"scripts": {
+		"build": "npm --prefix packages/tui run build && npm --prefix packages/ai run build && npm --prefix packages/agent run build && npm --prefix packages/cli run build",
+		"clean": "npm run clean --workspaces --if-present",
+		"check": "biome check --write --error-on-warnings . && tsc --noEmit",
+		"test": "vitest --run",
+		"dev": "./jtui-dev.sh"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.5.5",
+		"@types/node": "26.1.2",
+		"shx": "0.4.0",
+		"tsx": "4.23.1",
+		"typescript": "5.9.3",
+		"vitest": "4.1.10"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	}
+}

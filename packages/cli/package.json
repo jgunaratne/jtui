@@ -1,0 +1,35 @@
+{
+	"name": "@jtui/cli",
+	"version": "0.1.0",
+	"description": "Interactive coding agent CLI backed by Google Cloud Vertex AI",
+	"type": "module",
+	"bin": {
+		"jtui": "./dist/cli.js"
+	},
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist/**/*",
+		"README.md"
+	],
+	"scripts": {
+		"clean": "shx rm -rf dist",
+		"build": "tsc -p tsconfig.build.json && shx chmod +x dist/cli.js",
+		"prepublishOnly": "npm run clean && npm run build"
+	},
+	"license": "MIT",
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"dependencies": {
+		"@jtui/agent": "^0.1.0",
+		"@jtui/ai": "^0.1.0",
+		"@jtui/tui": "^0.1.0"
+	}
+}
