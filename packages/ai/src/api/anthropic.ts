@@ -97,14 +97,18 @@ export function convertMessages(messages: Message[]): Anthropic.MessageParam[] {
 			continue;
 		}
 
-		const text = message.content
-			.filter((block) => block.type === "text")
-			.map((block) => block.text)
-			.join("\n");
+		const resultContent = message.content.map((block) =>
+			block.type === "text"
+				? ({ type: "text", text: block.text } as const)
+				: ({
+						type: "image",
+						source: { type: "base64", media_type: block.mimeType as "image/png", data: block.data },
+					} as const),
+		);
 		const result: Anthropic.ToolResultBlockParam = {
 			type: "tool_result",
 			tool_use_id: message.toolCallId,
-			content: text,
+			content: resultContent,
 			is_error: message.isError,
 		};
 		const previous = out.at(-1);

@@ -56,6 +56,16 @@ describe("read", () => {
 		expect(result.content).toContain("binary");
 	});
 
+	it("returns image files as inline image content", async () => {
+		const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]);
+		writeFileSync(join(workspace, "logo.png"), bytes);
+		const result = await readTool.execute({ path: "logo.png" }, context);
+		expect(result.isError).toBeUndefined();
+		expect(Array.isArray(result.content)).toBe(true);
+		const content = result.content as { type: string; data?: string; mimeType?: string }[];
+		expect(content.at(-1)).toEqual({ type: "image", data: bytes.toString("base64"), mimeType: "image/png" });
+	});
+
 	it("points at the list tool for directories", async () => {
 		mkdirSync(join(workspace, "sub"));
 		const result = await readTool.execute({ path: "sub" }, context);

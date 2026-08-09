@@ -1,7 +1,10 @@
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { AgentTool } from "@jtui/agent";
-import { displayPath, formatBytes, looksBinary, resolvePath, truncateOutput } from "./common.ts";
+import { displayPath, formatBytes, imageMimeType, looksBinary, resolvePath, truncateOutput } from "./common.ts";
+
+/** Largest image forwarded inline; both provider APIs reject much beyond this. */
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
 interface ReadArgs {
 	path: string;
@@ -13,7 +16,8 @@ interface ReadArgs {
 export const readTool: AgentTool<ReadArgs> = {
 	name: "read",
 	description:
-		"Read a file from the filesystem. Returns the contents with line numbers. " +
+		"Read a file from the filesystem. Returns text with line numbers, or the image itself for " +
+		"PNG, JPEG, GIF, and WebP files so you can view its contents directly. " +
 		"Use offset and limit to page through large files.",
 	parameters: {
 		type: "object",
@@ -30,6 +34,24 @@ export const readTool: AgentTool<ReadArgs> = {
 		const info = await stat(path).catch(() => undefined);
 		if (!info) return { content: `File not found: ${args.path}`, isError: true };
 		if (info.isDirectory()) return { content: `${args.path} is a directory. Use the list tool.`, isError: true };
+
+		const mimeType = imageMimeType(path);
+		if (mimeType) {
+			if (info.size > MAX_IMAGE_BYTES) {
+				return {
+					content: `${args.path} is a ${formatBytes(info.size)} image; too large to view (limit ${formatBytes(MAX_IMAGE_BYTES)}).`,
+					isError: true,
+				};
+			}
+			const data = (await readFile(path)).toString("base64");
+			return {
+				content: [
+					{ type: "text", text: `Image ${displayPath(context.cwd, path)} (${formatBytes(info.size)}):` },
+					{ type: "image", data, mimeType },
+				],
+				details: { path, image: true },
+			};
+		}
 
 		const buffer = await readFile(path);
 		if (looksBinary(buffer)) {

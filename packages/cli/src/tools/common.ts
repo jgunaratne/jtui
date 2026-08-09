@@ -1,4 +1,4 @@
-import { isAbsolute, relative, resolve } from "node:path";
+import { extname, isAbsolute, relative, resolve } from "node:path";
 
 /** Maximum characters returned to the model from a single tool. */
 export const MAX_TOOL_OUTPUT = 30_000;
@@ -32,6 +32,20 @@ export function formatBytes(bytes: number): string {
 	if (bytes < 1024) return `${bytes} B`;
 	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
 	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Image formats both provider APIs accept as inline data, keyed by extension. */
+const IMAGE_MIME_TYPES: Record<string, string> = {
+	".png": "image/png",
+	".jpg": "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif": "image/gif",
+	".webp": "image/webp",
+};
+
+/** The image mime type for a path, or undefined if the extension is not a supported image. */
+export function imageMimeType(path: string): string | undefined {
+	return IMAGE_MIME_TYPES[extname(path).toLowerCase()];
 }
 
 /** Heuristic binary check so the agent never dumps binary into context. */

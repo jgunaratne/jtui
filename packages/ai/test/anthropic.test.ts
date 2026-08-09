@@ -85,7 +85,9 @@ describe("anthropic convertMessages", () => {
 			},
 		];
 		const [turn] = convertMessages(messages);
-		expect(turn?.content).toEqual([{ type: "tool_result", tool_use_id: "a", content: "boom", is_error: true }]);
+		expect(turn?.content).toEqual([
+			{ type: "tool_result", tool_use_id: "a", content: [{ type: "text", text: "boom" }], is_error: true },
+		]);
 	});
 
 	it("sends images as base64 blocks", () => {
@@ -93,6 +95,33 @@ describe("anthropic convertMessages", () => {
 		const [turn] = convertMessages(messages);
 		expect(turn?.content).toEqual([
 			{ type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+		]);
+	});
+
+	it("carries images in tool results", () => {
+		const messages: Message[] = [
+			{
+				role: "toolResult",
+				toolCallId: "a",
+				toolName: "read",
+				content: [
+					{ type: "text", text: "Image logo.png:" },
+					{ type: "image", data: "AAAA", mimeType: "image/png" },
+				],
+				isError: false,
+			},
+		];
+		const [turn] = convertMessages(messages);
+		expect(turn?.content).toEqual([
+			{
+				type: "tool_result",
+				tool_use_id: "a",
+				content: [
+					{ type: "text", text: "Image logo.png:" },
+					{ type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+				],
+				is_error: false,
+			},
 		]);
 	});
 

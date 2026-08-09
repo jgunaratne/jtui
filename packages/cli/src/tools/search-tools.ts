@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { glob, readFile, stat } from "node:fs/promises";
 import { relative } from "node:path";
 import type { AgentTool } from "@jtui/agent";
-import { resolvePath, truncateOutput } from "./common.ts";
+import { looksBinary, resolvePath, truncateOutput } from "./common.ts";
 
 const IGNORED = ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/build/**", "**/__pycache__/**", "**/.venv/**"];
 
@@ -65,6 +65,17 @@ interface GrepArgs {
 	max_results?: number;
 }
 
+/**
+ * Drop control bytes that would corrupt the terminal. Keeps tab; anything else
+ * below 0x20 (plus DEL) is stripped so a stray binary match never garbles output.
+ */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally matching control bytes to strip them.
+const CONTROL_BYTES = /[\x00-\x08\x0b-\x1f\x7f]/g;
+
+function sanitize(text: string): string {
+	return text.replace(CONTROL_BYTES, "");
+}
+
 /** Run ripgrep when present; it is far faster on large trees. */
 async function ripgrep(args: GrepArgs, root: string, limit: number): Promise<string | undefined> {
 	const parameters = ["--line-number", "--no-heading", "--color=never", `--max-count=${limit}`];
@@ -95,9 +106,9 @@ async function scanFiles(args: GrepArgs, root: string, limit: number): Promise<s
 		const path = resolvePath(root, typeof entry === "string" ? entry : String(entry));
 		const info = await stat(path).catch(() => undefined);
 		if (!info?.isFile() || info.size > 2_000_000) continue;
-		const content = await readFile(path, "utf8").catch(() => undefined);
-		if (content === undefined) continue;
-		const lines = content.split("\n");
+		const buffer = await readFile(path).catch(() => undefined);
+		if (buffer === undefined || looksBinary(buffer)) continue;
+		const lines = buffer.toString("utf8").split("\n");
 		for (let index = 0; index < lines.length; index++) {
 			const line = lines[index] ?? "";
 			if (!expression.test(line)) continue;
@@ -139,6 +150,6 @@ export const grepTool: AgentTool<GrepArgs> = {
 		const output = (await ripgrep(args, root, limit)) ?? (await scanFiles(args, root, limit));
 		if (output.trim().length === 0) return { content: `No matches for "${args.pattern}".` };
 		const lines = output.trimEnd().split("\n").slice(0, limit);
-		return { content: truncateOutput(lines.join("\n")), details: { matches: lines.length } };
+		return { content: sanitize(truncateOutput(lines.join("\n"))), details: { matches: lines.length } };
 	},
 };
