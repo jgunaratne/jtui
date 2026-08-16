@@ -160,6 +160,9 @@ export async function* runAgent(
 					case "thinking_delta":
 						yield { type: "thinking_delta", delta: event.delta };
 						break;
+					case "status":
+						yield { type: "status", label: event.label };
+						break;
 					case "image":
 						yield { type: "image", image: event.image };
 						break;

@@ -435,5 +435,6 @@ async function runWithClient(
 		cwd,
 		systemPromptFor,
 		initialPrompt: args.prompt,
+		configuredLocation: args.location ?? fileConfig.location,
 	});
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseQuotaReset } from "../src/modes/interactive.ts";
+import { isQuotaExhausted, parseQuotaReset } from "../src/modes/interactive.ts";
 
 describe("parseQuotaReset", () => {
 	it("extracts a compound duration from the antigravity quota message", () => {
@@ -21,5 +21,19 @@ describe("parseQuotaReset", () => {
 
 	it("returns undefined when no duration is present", () => {
 		expect(parseQuotaReset("You have exhausted your capacity on this model.")).toBeUndefined();
+	});
+});
+
+describe("isQuotaExhausted", () => {
+	it("detects exhaustion even without a reset window", () => {
+		expect(isQuotaExhausted("You have exhausted your capacity on this model.")).toBe(true);
+	});
+
+	it("detects exhaustion with a reset window", () => {
+		expect(isQuotaExhausted("Your quota will reset after 10m10s.")).toBe(true);
+	});
+
+	it("is false for unrelated errors", () => {
+		expect(isQuotaExhausted("Request failed with status 500")).toBe(false);
 	});
 });

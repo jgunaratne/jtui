@@ -60,6 +60,12 @@ export interface InteractiveOptions {
 	systemPromptFor?: (model: string) => string;
 	/** Prompt to run immediately on startup. */
 	initialPrompt?: string;
+	/**
+	 * Vertex AI location from the file config (`--location` / config.json).
+	 * Used as a fallback when switching to gcloud from a session that started
+	 * in antigravity mode, where no vertexLocation has been established yet.
+	 */
+	configuredLocation?: string;
 }
 
 /** Status line shown under the editor. */
@@ -128,8 +134,11 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 	const modelByEngine = new Map<EngineMode, string>();
 	// The region is bound at client construction and lost while in antigravity
 	// mode, so remember it: returning to gcloud must restore the chosen region
-	// rather than snapping back to the default.
-	let vertexLocation = options.client instanceof VertexClient ? options.client.credentials.location : undefined;
+	// rather than snapping back to the default. When starting in antigravity
+	// mode, seed from the file config so the first switch to gcloud honours the
+	// configured location rather than falling back to the hardcoded default.
+	let vertexLocation =
+		options.client instanceof VertexClient ? options.client.credentials.location : options.configuredLocation;
 	const terminal = new ProcessTerminal();
 	const tui = new TUI(terminal);
 
@@ -728,27 +737,42 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 	 * A model quota is exhausted. Queue the prompt for automatic retry (the
 	 * default), and offer to run it now on another model or engine instead.
 	 */
-	const offerQuotaRetry = (prompt: string, resetMs: number) => {
-		scheduleRetry(prompt, resetMs);
+	const offerQuotaRetry = (prompt: string, resetMs: number | undefined) => {
+		// A known reset window lets us queue an automatic retry as the default.
+		// Without one (the CLI does not always report it), the only recourse is to
+		// switch pool, model, or engine now.
+		if (resetMs !== undefined) {
+			scheduleRetry(prompt, resetMs);
+		} else {
+			emit([
+				yellow("Model quota exhausted, with no reset time reported."),
+				dim("  Choose an option below to run your prompt now."),
+			]);
+		}
+		const items = [
+			...(resetMs !== undefined
+				? [
+						{
+							label: `Wait ${formatDuration(resetMs)} and retry automatically`,
+							description: "recommended",
+							value: "wait",
+						},
+					]
+				: []),
+			{ label: "Retry now on another model", description: "same engine", value: "model" },
+			{ label: "Retry now on another engine and model", value: "engine" },
+		];
 		showOverlay(
 			new SelectList<string>({
 				title: "Model quota exhausted",
-				items: [
-					{
-						label: `Wait ${formatDuration(resetMs)} and retry automatically`,
-						description: "recommended",
-						value: "wait",
-					},
-					{ label: "Retry now on another model", description: "same engine", value: "model" },
-					{ label: "Retry now on another engine and model", value: "engine" },
-				],
+				items,
 				onSelect: (item) => {
 					closeOverlay();
 					if (item.value === "wait") return;
 					if (item.value === "model") retryOnAnotherModel(prompt);
 					else retryOnAnotherEngine(prompt);
 				},
-				// Cancelling keeps the scheduled auto-retry.
+				// Cancelling keeps the scheduled auto-retry, if any.
 				onCancel: closeOverlay,
 			}),
 		);
@@ -760,6 +784,8 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 		loader.begin("Thinking");
 		const turnStartedAt = Date.now();
 		// Set when the turn fails with a quota-exhausted error; drives the retry flow.
+		// The reset delay may be unknown even when the quota is exhausted.
+		let quotaExhausted = false;
 		let quotaResetMs: number | undefined;
 		tui.requestRender();
 
@@ -782,6 +808,12 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 					case "thinking_delta":
 						loader.stop();
 						thinking.append(event.delta);
+						break;
+					case "status":
+						// A quiet working phase (e.g. the Antigravity CLI running a tool
+						// internally). Keep the spinner animating with a live label so the
+						// screen never looks frozen.
+						loader.begin(event.label);
 						break;
 					case "image": {
 						loader.stop();
@@ -838,10 +870,11 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 						break;
 					}
 					case "error": {
+						quotaExhausted = isQuotaExhausted(event.message);
 						quotaResetMs = parseQuotaReset(event.message);
 						// A quota error is handled by the retry flow after the turn ends,
 						// so it is not surfaced as a hard error here.
-						if (quotaResetMs === undefined) emitError(event.message);
+						if (!quotaExhausted) emitError(event.message);
 						break;
 					}
 					case "turn_end": {
@@ -869,7 +902,7 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 			tui.requestRender();
 		}
 
-		if (quotaResetMs !== undefined) {
+		if (quotaExhausted) {
 			// Hold the queue until the retry runs; the queued prompts would only hit
 			// the same exhausted quota now.
 			offerQuotaRetry(prompt, quotaResetMs);
@@ -942,8 +975,12 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
  * capacity on this model. Your quota will reset after 10m10s." Returns undefined
  * for any other error so the caller can fall back to surfacing it normally.
  */
+export function isQuotaExhausted(message: string): boolean {
+	return /exhausted (?:your )?capacity|quota will reset/i.test(message);
+}
+
 export function parseQuotaReset(message: string): number | undefined {
-	if (!/exhausted (?:your )?capacity|quota will reset/i.test(message)) return undefined;
+	if (!isQuotaExhausted(message)) return undefined;
 	const match = /reset (?:after|in) ((?:\d+h)?(?:\d+m)?(?:\d+s)?)/i.exec(message);
 	const spec = match?.[1];
 	if (!spec) return undefined;

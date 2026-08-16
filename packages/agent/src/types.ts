@@ -51,6 +51,8 @@ export type AgentEvent =
 	| { type: "message_start"; model: string }
 	| { type: "thinking_delta"; delta: string }
 	| { type: "text_delta"; delta: string }
+	/** Progress note for a quiet working phase, e.g. an agent running a tool internally. */
+	| { type: "status"; label: string }
 	/** An image the model generated, complete rather than streamed. */
 	| { type: "image"; image: ImageContent }
 	| { type: "assistant_message"; message: AssistantMessage }

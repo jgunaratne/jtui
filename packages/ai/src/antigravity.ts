@@ -73,6 +73,20 @@ interface CliEvent {
 	result?: CliResult;
 }
 
+/** Whether a CLI step carries the model's reasoning rather than its answer. */
+function isThinkingStep(step: CliStepUpdate): boolean {
+	const type = step.step_type.toLowerCase();
+	return type.includes("thinking") || type.includes("thought") || type.includes("reasoning");
+}
+
+/** Humanize a CLI step type into a spinner label, e.g. "tool_call" -> "Tool call". */
+function stepLabel(step: CliStepUpdate): string {
+	const raw = step.step_type.trim();
+	if (!raw) return "Working";
+	const words = raw.replace(/_/g, " ");
+	return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 function toUsage(usage: CliUsage | undefined): Usage {
 	if (!usage) return { input: 0, output: 0, cacheRead: 0, thinking: 0, costUsd: 0 };
 	return {
@@ -269,11 +283,30 @@ export class AntigravityClient implements ModelClient {
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 
-		// Wire up abort signal.
+		// Keep the tail of stderr so a startup failure (e.g. an unrecognized flag)
+		// can be reported instead of vanishing. Still consume every chunk so a full
+		// pipe buffer can't block the child from finishing.
+		let stderrTail = "";
+		child.stderr?.setEncoding("utf8");
+		child.stderr?.on("data", (chunk: string) => {
+			stderrTail = (stderrTail + chunk).slice(-2000);
+		});
+
+		// The CLI can reject the request outright (bad flag, auth) and exit non-zero
+		// without emitting any stream-json. Capture the code so the stream ends as an
+		// error rather than a silent empty response.
+		let exitCode: number | null = null;
+		child.once("exit", (code) => {
+			exitCode = code;
+		});
+
+		// Wire up abort signal. Clean up on "exit" rather than "close": the CLI
+		// spawns tool subprocesses that inherit its stdout pipe, so "close" (which
+		// waits for stdio to close too) may never fire.
 		if (options.signal) {
 			const onAbort = () => child.kill("SIGTERM");
 			options.signal.addEventListener("abort", onAbort, { once: true });
-			child.on("close", () => options.signal?.removeEventListener("abort", onAbort));
+			child.once("exit", () => options.signal?.removeEventListener("abort", onAbort));
 		}
 
 		yield { type: "start", model };
@@ -284,6 +317,26 @@ export class AntigravityClient implements ModelClient {
 		let errorText = "";
 
 		const rl = createInterface({ input: child.stdout });
+
+		// The CLI's tool subprocesses (e.g. MCP servers) can outlive it while
+		// holding its stdout pipe open, so EOF may never arrive. Drive completion
+		// off the CLI's own exit: once it is gone, flush any buffered lines and
+		// stop reading rather than hanging forever.
+		child.once("exit", () => {
+			setTimeout(() => {
+				rl.close();
+				child.stdout?.destroy();
+			}, 500).unref?.();
+		});
+		// A spawn failure would otherwise throw as an unhandled event; surface it
+		// as an error result and end the read loop.
+		child.once("error", (err: Error) => {
+			hadError = true;
+			errorText = `Antigravity CLI failed: ${err.message}`;
+			rl.close();
+			child.stdout?.destroy();
+		});
+
 		for await (const line of rl) {
 			if (line.trim().length === 0) continue;
 			let parsed: CliEvent;
@@ -301,6 +354,15 @@ export class AntigravityClient implements ModelClient {
 				if (step.step_type === "agent_response" && step.text_delta) {
 					fullText += step.text_delta;
 					yield { type: "text_delta", delta: step.text_delta };
+				} else if (isThinkingStep(step) && step.text_delta) {
+					// Reasoning the CLI streams before its answer; surface it like the
+					// gcloud engine's thinking so the user can follow the model's work.
+					yield { type: "thinking_delta", delta: step.text_delta };
+				} else {
+					// The CLI runs tools and reasons internally, streaming no text for
+					// those steps. Surface them so the host keeps a spinner alive rather
+					// than freezing on a quiet screen for the length of the step.
+					yield { type: "status", label: stepLabel(step) };
 				}
 				if (step.usage) lastUsage = toUsage(step.usage);
 			}
@@ -321,6 +383,13 @@ export class AntigravityClient implements ModelClient {
 					}
 				}
 			}
+		}
+
+		// A non-zero exit with no usable output means the CLI refused the request
+		// before streaming anything; surface stderr so the failure isn't silent.
+		if (!hadError && !options.signal?.aborted && fullText.length === 0 && exitCode !== null && exitCode !== 0) {
+			hadError = true;
+			errorText = stderrTail.trim() || `Antigravity CLI exited with code ${exitCode} and no output.`;
 		}
 
 		const finalMessage: AssistantMessage = {

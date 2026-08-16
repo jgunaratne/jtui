@@ -141,6 +141,8 @@ export type StreamEvent =
 	| { type: "start"; model: string }
 	| { type: "thinking_delta"; delta: string }
 	| { type: "text_delta"; delta: string }
+	/** Progress note for a quiet working phase, e.g. an agent running a tool internally. */
+	| { type: "status"; label: string }
 	| { type: "tool_call"; toolCall: ToolCallContent }
 	/** A generated image, emitted whole rather than streamed. */
 	| { type: "image"; image: ImageContent }

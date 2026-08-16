@@ -60,6 +60,9 @@ export async function runPrint(options: PrintOptions): Promise<number> {
 					process.stdout.write(`${lines.join("\n")}\n`);
 					break;
 				}
+				case "status":
+					if (options.verbose) process.stderr.write(`· ${event.label}\n`);
+					break;
 				case "tool_start":
 					if (options.verbose) process.stderr.write(`· ${event.summary}\n`);
 					break;
