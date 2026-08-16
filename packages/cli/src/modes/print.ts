@@ -1,10 +1,10 @@
 import type { AgentConfig, AgentState, Session } from "@jtui/agent";
 import { runAgent } from "@jtui/agent";
-import { messageText, type VertexClient } from "@jtui/ai";
+import { type ModelClient, messageText } from "@jtui/ai";
 import { renderGeneratedImage, saveImage } from "../images.ts";
 
 export interface PrintOptions {
-	client: VertexClient;
+	client: ModelClient;
 	config: AgentConfig;
 	state: AgentState;
 	session: Session;

@@ -66,6 +66,26 @@ describe("parseArgs", () => {
 		expect(parseArgs(["--nope"]).errors).toContain("unknown option: --nope");
 	});
 
+	it("parses --engine gcloud", () => {
+		const args = parseArgs(["--engine", "gcloud"]);
+		expect(args.engine).toBe("gcloud");
+		expect(args.errors).toEqual([]);
+	});
+
+	it("parses --engine antigravity", () => {
+		const args = parseArgs(["--engine", "antigravity"]);
+		expect(args.engine).toBe("antigravity");
+		expect(args.errors).toEqual([]);
+	});
+
+	it("rejects an invalid engine value", () => {
+		expect(parseArgs(["--engine", "turbo"]).errors[0]).toContain('--engine must be "gcloud" or "antigravity"');
+	});
+
+	it("reports --engine missing its value", () => {
+		expect(parseArgs(["--engine"]).errors).toContain("--engine requires a value");
+	});
+
 	it("handles help and version", () => {
 		expect(parseArgs(["--help"]).command).toBe("help");
 		expect(parseArgs(["--version"]).command).toBe("version");

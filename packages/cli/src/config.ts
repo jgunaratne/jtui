@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CompactionSettings } from "@jtui/agent";
-import type { PricingTable, ThinkingLevel } from "@jtui/ai";
+import type { EngineMode, PricingTable, ThinkingLevel } from "@jtui/ai";
 
 export interface JtuiConfig {
 	model?: string;
@@ -28,6 +28,8 @@ export interface JtuiConfig {
 	 * { "claude-sonnet-4-5": { "inputPerMillion": 3, "outputPerMillion": 15 } }
 	 */
 	pricing?: PricingTable;
+	/** Which backend handles model requests: "gcloud" for direct Vertex AI, "antigravity" for Jetski CLI. */
+	engine?: EngineMode;
 }
 
 /**

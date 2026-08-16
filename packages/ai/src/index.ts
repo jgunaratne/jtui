@@ -1,3 +1,9 @@
+export {
+	AntigravityClient,
+	discoverAntigravityModels,
+	findJetskiCli,
+	JetskiNotFoundError,
+} from "./antigravity.ts";
 export { AnthropicApi } from "./api/anthropic.ts";
 export { convertMessages, convertTools, GeminiApi } from "./api/gemini.ts";
 export {
@@ -23,6 +29,7 @@ export {
 	supportedModels,
 } from "./catalog.ts";
 export { UnsupportedModelError, VertexClient, type VertexClientOptions } from "./client.ts";
+export type { EngineMode, ModelClient } from "./engine.ts";
 export { formatVertexError } from "./errors.ts";
 export {
 	calculateCost,

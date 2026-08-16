@@ -1,4 +1,4 @@
-import { getCapabilities, inferApi, type Message, messageText, type VertexClient } from "@jtui/ai";
+import { getCapabilities, inferApi, type Message, type ModelClient, messageText } from "@jtui/ai";
 import type { AgentState } from "./types.ts";
 
 export interface CompactionSettings {
@@ -105,7 +105,7 @@ export interface CompactionResult {
  * undefined when there is not enough history to be worth compacting.
  */
 export async function compact(
-	client: VertexClient,
+	client: ModelClient,
 	model: string,
 	state: AgentState,
 	settings: CompactionSettings = {},

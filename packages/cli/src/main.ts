@@ -4,11 +4,17 @@ import { fileURLToPath } from "node:url";
 import type { AgentConfig } from "@jtui/agent";
 import { createState, listSessions, loadSession, newSessionId, Session } from "@jtui/agent";
 import {
+	AntigravityClient,
 	adapterModels,
 	applyProbeResults,
 	callableModels,
+	discoverAntigravityModels,
+	type EngineMode,
+	findJetskiCli,
+	JetskiNotFoundError,
 	loadCatalog,
 	type ModelCatalog,
+	type ModelClient,
 	probeModels,
 	saveCatalog,
 	supportedModels,
@@ -102,6 +108,61 @@ export async function main(argv: string[]): Promise<number> {
 		return 0;
 	}
 
+	const engine: EngineMode = args.engine ?? fileConfig.engine ?? "gcloud";
+
+	// ---- Antigravity (Jetski CLI) path ----
+	if (engine === "antigravity") {
+		const jetskiPath = findJetskiCli();
+		if (!jetskiPath) {
+			const error = new JetskiNotFoundError();
+			process.stderr.write(`jtui: ${error.message}\n`);
+			for (const hint of error.hints) process.stderr.write(`  ${hint}\n`);
+			return 1;
+		}
+
+		if (args.command === "auth") {
+			process.stdout.write("Antigravity mode — authentication is handled by the Jetski CLI.\n");
+			process.stdout.write(`  jetski  ${jetskiPath}\n`);
+			return 0;
+		}
+
+		let catalog: ModelCatalog | undefined;
+		try {
+			catalog = await discoverAntigravityModels(jetskiPath);
+		} catch (error) {
+			if (args.command === "models") {
+				process.stderr.write(`jtui: could not list models: ${(error as Error).message}\n`);
+				return 1;
+			}
+			process.stderr.write(`jtui: model discovery failed (${(error as Error).message})\n`);
+		}
+
+		if (args.command === "models") {
+			if (!catalog) return 1;
+			const entries = supportedModels(catalog);
+			let publisher = "";
+			for (const entry of entries) {
+				if (entry.publisher !== publisher) {
+					publisher = entry.publisher;
+					process.stdout.write(`${publisher}\n`);
+				}
+				process.stdout.write(`  ${entry.id}\n`);
+			}
+			return 0;
+		}
+
+		const available = catalog ? supportedModels(catalog).map((entry) => entry.id) : [];
+		const model = args.model ?? fileConfig.model ?? pickDefaultModel(available);
+		if (!model) {
+			process.stderr.write("jtui: no usable model found. Run 'jtui models' to see what this project can call.\n");
+			return 1;
+		}
+
+		const client: ModelClient = new AntigravityClient(jetskiPath, { catalog, pricing: fileConfig.pricing });
+		return runWithClient(client, model, args, fileConfig, cwd);
+	}
+
+	// ---- gcloud (Vertex AI) path ----
 	let credentials: Awaited<ReturnType<typeof verifyCredentials>>;
 	try {
 		credentials = await verifyCredentials({
@@ -201,7 +262,7 @@ export async function main(argv: string[]): Promise<number> {
 		return 1;
 	}
 
-	const client = new VertexClient(credentials, { catalog, pricing: fileConfig.pricing });
+	const client: ModelClient = new VertexClient(credentials, { catalog, pricing: fileConfig.pricing });
 	try {
 		// Fail fast on an unroutable model rather than mid-conversation.
 		client.resolveApi(model);
@@ -214,6 +275,17 @@ export async function main(argv: string[]): Promise<number> {
 		throw error;
 	}
 
+	return runWithClient(client, model, args, fileConfig, cwd);
+}
+
+/** Shared logic once an engine-specific client and model are resolved. */
+async function runWithClient(
+	client: ModelClient,
+	model: string,
+	args: ReturnType<typeof parseArgs>,
+	fileConfig: ReturnType<typeof loadConfig>,
+	cwd: string,
+): Promise<number> {
 	const { tools, bash } = createDefaultTools(cwd);
 
 	/** Rebuilt on /model so the stated model never goes stale. */

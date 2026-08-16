@@ -10,6 +10,7 @@ export interface ParsedArgs {
 	project?: string;
 	location?: string;
 	thinking?: ThinkingLevel;
+	engine?: "gcloud" | "antigravity";
 	maxTurns?: number;
 	credentialsFile?: string;
 	/** Resume the most recent session in this directory. */
@@ -51,6 +52,7 @@ Options
       --thinking <level>   off | low | medium | high (default: medium)
       --max-turns <n>      stop after n assistant turns (default: 100)
       --credentials <path> service account key file
+      --engine <mode>      gcloud | antigravity (default: gcloud)
   -c, --continue           resume the most recent session here
       --resume <id>        resume a specific session
       --no-project-context ignore JTUI.md / AGENTS.md / CLAUDE.md
@@ -161,6 +163,17 @@ export function parseArgs(argv: string[]): ParsedArgs {
 				args.credentialsFile = next(index, argument);
 				index += 1;
 				break;
+			case "--engine": {
+				const value = next(index, argument);
+				index += 1;
+				if (value === undefined) break;
+				if (value !== "gcloud" && value !== "antigravity") {
+					args.errors.push(`--engine must be "gcloud" or "antigravity" (got "${value}")`);
+					break;
+				}
+				args.engine = value;
+				break;
+			}
 			case "--resume":
 				args.resume = next(index, argument);
 				index += 1;

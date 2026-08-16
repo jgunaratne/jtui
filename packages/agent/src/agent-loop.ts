@@ -4,11 +4,11 @@ import {
 	type Context,
 	emptyUsage,
 	type Message,
+	type ModelClient,
 	messageToolCalls,
 	type ToolCallContent,
 	type ToolResultMessage,
 	type UserContent,
-	type VertexClient,
 } from "@jtui/ai";
 import { compact, shouldCompact } from "./compaction.ts";
 import { LoopDetector } from "./loop-detector.ts";
@@ -91,7 +91,7 @@ function toolResultMessage(execution: ToolExecution): ToolResultMessage {
  * caller keeps the full conversation even if the run is interrupted.
  */
 export async function* runAgent(
-	client: VertexClient,
+	client: ModelClient,
 	config: AgentConfig,
 	state: AgentState,
 	prompt: string | Message,

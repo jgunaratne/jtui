@@ -10,6 +10,7 @@ import {
 import {
 	type CatalogEntry,
 	loadCatalog,
+	type ModelClient,
 	messageText,
 	supportedModels,
 	UnsupportedModelError,
@@ -36,7 +37,7 @@ import { StreamingView } from "./streaming-view.ts";
 const { bold, cyan, dim, gray, green, red, yellow } = styles;
 
 export interface InteractiveOptions {
-	client: VertexClient;
+	client: ModelClient;
 	config: AgentConfig;
 	state: AgentState;
 	session: Session;
@@ -148,11 +149,13 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 	const updateStatus = () => {
 		const usage = state.totalUsage;
 		const tokens = usage.input + usage.output;
-		const parts = [
-			config.model,
-			`${client.credentials.project}/${client.credentials.location}`,
-			`${(tokens / 1000).toFixed(1)}k tokens`,
-		];
+		const parts = [config.model];
+		if (client instanceof VertexClient) {
+			parts.push(`${client.credentials.project}/${client.credentials.location}`);
+		} else {
+			parts.push("antigravity");
+		}
+		parts.push(`${(tokens / 1000).toFixed(1)}k tokens`);
 		const context = contextUsage(state, config.model);
 		if (context > 0) parts.push(`${Math.round(context * 100)}% ctx`);
 		if (usage.costUsd > 0) parts.push(`$${usage.costUsd.toFixed(4)}`);
@@ -186,7 +189,7 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 
 	const chooseModel = async () => {
 		let entries: CatalogEntry[] = client.catalog ? supportedModels(client.catalog) : [];
-		if (entries.length === 0) {
+		if (entries.length === 0 && client instanceof VertexClient) {
 			emit([dim("Discovering models…")]);
 			try {
 				client.catalog = await loadCatalog(client.credentials);
@@ -195,6 +198,10 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 				emitError(`Could not list models: ${(error as Error).message}`);
 				return;
 			}
+		}
+		if (entries.length === 0) {
+			emitError("No models available.");
+			return;
 		}
 		const items: SelectItem<string>[] = entries.map((entry) => ({
 			label: entry.id,
@@ -247,6 +254,10 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 	 * so this rebuilds the client and rediscovers models for the new region.
 	 */
 	const setLocation = async (location: string) => {
+		if (!(client instanceof VertexClient)) {
+			emit([yellow("Region switching is not available in antigravity mode.")]);
+			return;
+		}
 		if (busy) {
 			emit([yellow("Finish or interrupt the current turn first (esc).")]);
 			return;
@@ -348,6 +359,10 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 				return true;
 			}
 			case "location":
+				if (!(client instanceof VertexClient)) {
+					emit([yellow("Region switching is not available in antigravity mode.")]);
+					return true;
+				}
 				if (!argument) {
 					emit([
 						`Vertex region: ${client.credentials.location}`,
@@ -365,22 +380,32 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 				setModel(argument);
 				return true;
 			case "models": {
-				emit([dim("Querying Vertex AI…")]);
-				try {
-					client.catalog = await loadCatalog(client.credentials, { refresh: argument === "refresh" });
-					const rows: string[] = [];
-					let publisher = "";
-					for (const entry of supportedModels(client.catalog)) {
-						if (entry.publisher !== publisher) {
-							publisher = entry.publisher;
-							rows.push(bold(publisher));
-						}
-						rows.push(entry.id === config.model ? cyan(`  ${entry.id}  (current)`) : `  ${entry.id}`);
+				if (client instanceof VertexClient) {
+					emit([dim("Querying Vertex AI…")]);
+					try {
+						client.catalog = await loadCatalog(client.credentials, { refresh: argument === "refresh" });
+					} catch (error) {
+						emitError(`Could not list models: ${(error as Error).message}`);
+						return true;
 					}
-					emit([...rows, dim("  /models refresh re-queries; access is granted in Model Garden.")]);
-				} catch (error) {
-					emitError(`Could not list models: ${(error as Error).message}`);
+				} else {
+					emit([dim("Using cached model list.")]);
 				}
+				const catalog = client.catalog;
+				if (!catalog) {
+					emitError("No model catalog available.");
+					return true;
+				}
+				const rows: string[] = [];
+				let publisher = "";
+				for (const entry of supportedModels(catalog)) {
+					if (entry.publisher !== publisher) {
+						publisher = entry.publisher;
+						rows.push(bold(publisher));
+					}
+					rows.push(entry.id === config.model ? cyan(`  ${entry.id}  (current)`) : `  ${entry.id}`);
+				}
+				emit([...rows, dim("  /models refresh re-queries; access is granted in Model Garden.")]);
 				return true;
 			}
 			default:
@@ -572,18 +597,18 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 	return exitCode;
 }
 
-function printBanner(client: VertexClient, config: AgentConfig, cwd: string): void {
+function printBanner(client: ModelClient, config: AgentConfig, cwd: string): void {
 	const entry = client.entryFor(config.model);
 	const publisher = entry ? ` (${entry.publisher})` : "";
-	const lines = [
-		`${bold(cyan("jtui"))} ${dim("· coding agent on Google Cloud Vertex AI")}`,
-		dim(`  model    ${config.model}${publisher}`),
-		dim(`  project  ${client.credentials.project}`),
-		dim(`  location ${client.credentials.location}`),
-		dim(`  cwd      ${cwd}`),
-		"",
-		dim("  /help for commands, esc to interrupt"),
-		"",
-	];
+	const subtitle =
+		client instanceof VertexClient ? "coding agent on Google Cloud Vertex AI" : "coding agent via Antigravity";
+	const lines = [`${bold(cyan("jtui"))} ${dim(`· ${subtitle}`)}`, dim(`  model    ${config.model}${publisher}`)];
+	if (client instanceof VertexClient) {
+		lines.push(dim(`  project  ${client.credentials.project}`));
+		lines.push(dim(`  location ${client.credentials.location}`));
+	} else {
+		lines.push(dim("  engine   antigravity (Jetski CLI)"));
+	}
+	lines.push(dim(`  cwd      ${cwd}`), "", dim("  /help for commands, esc to interrupt"), "");
 	process.stdout.write(`${lines.join("\n")}\n`);
 }
