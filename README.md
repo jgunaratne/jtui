@@ -117,6 +117,7 @@ jtui -p "explain src/server.ts"       # print the answer and exit
 jtui -p --json "list the routes"      # one JSON event per line
 jtui models                           # what this project can actually call
 jtui models --all --refresh           # include other publishers, re-query
+jtui models --check                   # call each one; hide what this project cannot use
 jtui -m claude-opus-4-5 "review this" # any discovered model
 jtui sessions                         # transcripts saved in this directory
 jtui -c                               # resume the most recent session
@@ -144,6 +145,33 @@ default from what is actually available, so it works on a fresh account without 
 **Being listed is not the same as having access.** Model Garden lists everything Google publishes;
 calling a model additionally requires it to be enabled for your project, which is why a listed model
 can still return 404. The error message says so and suggests the fix.
+
+`jtui models --check` settles it by sending one real request to every model and recording which
+answered. Models that fail are hidden from `jtui models`, from `/model`, and from the default-model
+choice, so you only ever see what this project can actually call:
+
+```
+❯ jtui models --check
+Checking 34 model(s)...
+  [1/34] ok   gemini-3.7-flash
+  [2/34] fail claude-sonnet-5
+...
+Checked 34; 22 unavailable.
+```
+
+The verdict is stored per project and location alongside the catalog and survives `--refresh`, so
+the check is a one-off rather than a per-run cost. `--all` shows the hidden models with the reason
+each one failed. Re-run `--check` after being granted a model, or a check will keep hiding it.
+
+Only a failed check hides a model: one that has never been checked is still listed, since discovery
+alone proves nothing either way.
+
+**Only the newest release of each line is listed.** Model Garden carries every generation a project
+can see, so `gemini-2.5-flash`, `gemini-3.5-flash`, `gemini-3.6-flash` and `gemini-3.7-flash` all
+appear; jtui shows the last of them and marks the rest superseded. Lines are matched on the model id
+with the version removed, so `flash`, `flash-lite` and `flash-image` stay distinct, and a stable
+release beats a preview of the same version. `--all` lists the superseded ids, and any of them can
+still be used with an explicit `-m`.
 
 Switching model mid-session with `/model` is safe across publishers — reasoning blocks signed by one
 provider are dropped rather than replayed to another, which would be rejected.
@@ -180,7 +208,8 @@ Run from source during development with `./jtui-dev.sh` (same arguments).
 | `-c, --continue` / `--resume <id>` | Resume a session |
 | `--no-project-context` | Ignore `JTUI.md` / `AGENTS.md` / `CLAUDE.md` |
 | `--refresh` | Re-query the model catalog instead of using the cache |
-| `--all` | With `models`, include publishers jtui cannot call |
+| `--all` | With `models`, include publishers jtui cannot call, and models a check rejected |
+| `--check` | With `models`, call each one and hide the ones that fail |
 | `--no-loop-detection` | Do not end a turn when the model repeats itself |
 | `--no-compaction` | Do not summarize older history as the context fills |
 

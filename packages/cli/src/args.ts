@@ -21,6 +21,8 @@ export interface ParsedArgs {
 	refresh: boolean;
 	/** Include models jtui has no adapter for. */
 	all: boolean;
+	/** With 'models', send a real request to each one and record what answers. */
+	check: boolean;
 	/** Disable cutting a turn short when the model repeats itself. */
 	noLoopDetection: boolean;
 	/** Disable summarizing older history as the context fills. */
@@ -35,7 +37,7 @@ export const USAGE = `jtui - coding agent backed by Google Cloud Vertex AI
 Usage
   jtui [options] [prompt]        start the interactive agent
   jtui -p [options] <prompt>     run once and print the answer
-  jtui models [--all]            list models available to the project
+  jtui models [--all|--check]    list models available to the project
   jtui auth                      check Google Cloud credentials
   jtui sessions                  list saved sessions in this directory
 
@@ -54,6 +56,7 @@ Options
       --no-project-context ignore JTUI.md / AGENTS.md / CLAUDE.md
       --refresh            re-query the model catalog instead of using the cache
       --all                with 'models', include publishers jtui cannot call
+      --check              with 'models', call each one and hide what fails
       --no-loop-detection  do not stop a turn when the model repeats itself
       --no-compaction      do not summarize older history as the context fills
   -h, --help               show this help
@@ -80,6 +83,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
 		noProjectContext: false,
 		refresh: false,
 		all: false,
+		check: false,
 		noLoopDetection: false,
 		noCompaction: false,
 		errors: [],
@@ -130,6 +134,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
 				break;
 			case "--all":
 				args.all = true;
+				break;
+			case "--check":
+				args.check = true;
 				break;
 			case "--no-loop-detection":
 				args.noLoopDetection = true;

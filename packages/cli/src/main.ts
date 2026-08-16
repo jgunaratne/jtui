@@ -4,12 +4,18 @@ import { fileURLToPath } from "node:url";
 import type { AgentConfig } from "@jtui/agent";
 import { createState, listSessions, loadSession, newSessionId, Session } from "@jtui/agent";
 import {
+	adapterModels,
+	applyProbeResults,
+	callableModels,
 	loadCatalog,
 	type ModelCatalog,
+	probeModels,
+	saveCatalog,
 	supportedModels,
 	UnsupportedModelError,
 	VertexAuthError,
 	VertexClient,
+	type VertexCredentials,
 	verifyCredentials,
 } from "@jtui/ai";
 import { parseArgs, USAGE } from "./args.ts";
@@ -27,6 +33,35 @@ function readVersion(): string {
 	} catch {
 		return "0.0.0";
 	}
+}
+
+/**
+ * Send one real request to every model with an adapter and record which
+ * answered, so the listing reflects access rather than what Model Garden
+ * advertises. Progress goes to stderr, leaving stdout the plain listing.
+ */
+async function checkModels(
+	catalog: ModelCatalog,
+	credentials: VertexCredentials,
+	fileConfig: { pricing?: VertexClient["pricing"] },
+): Promise<ModelCatalog> {
+	const client = new VertexClient(credentials, {
+		catalog,
+		...(fileConfig.pricing ? { pricing: fileConfig.pricing } : {}),
+	});
+	const targets = adapterModels(catalog);
+	process.stderr.write(`Checking ${targets.length} model(s)...\n`);
+	const results = await probeModels(client, targets, {
+		onResult: (result, done, total) => {
+			const mark = result.available ? "ok  " : "fail";
+			process.stderr.write(`  [${done}/${total}] ${mark} ${result.id}\n`);
+		},
+	});
+	const checked: ModelCatalog = { ...catalog, entries: applyProbeResults(catalog.entries, results) };
+	saveCatalog(checked);
+	const failed = results.filter((result) => !result.available).length;
+	process.stderr.write(`Checked ${results.length}; ${failed} unavailable.\n\n`);
+	return checked;
 }
 
 /** Print an auth failure with its setup hints. */
@@ -105,25 +140,57 @@ export async function main(argv: string[]): Promise<number> {
 
 	if (args.command === "models") {
 		if (!catalog) return 1;
+
+		if (args.check) {
+			catalog = await checkModels(catalog, credentials, fileConfig);
+		}
+
 		const age = Math.round((Date.now() - catalog.fetchedAt) / 60_000);
 		process.stdout.write(`Models for ${catalog.project} in ${catalog.location}`);
 		process.stdout.write(age > 0 ? ` (cached ${age}m ago; --refresh to update)\n\n` : `\n\n`);
 
+		const usable = supportedModels(catalog);
+		const shown = new Set(usable.map((entry) => entry.id));
+
 		let publisher = "";
 		for (const entry of catalog.entries) {
 			if (!args.all && !entry.api) continue;
+			// A model a check proved uncallable is noise in the default listing.
+			if (!args.all && entry.available === false) continue;
+			// So is an older release of a line that has a newer one.
+			if (!args.all && !shown.has(entry.id)) continue;
 			if (entry.publisher !== publisher) {
 				publisher = entry.publisher;
 				process.stdout.write(`${publisher}\n`);
 			}
-			const note = entry.api ? "" : "  (no jtui adapter)";
+			const note = entry.api
+				? entry.available === false
+					? `  (unavailable: ${entry.unavailableReason ?? "request failed"})`
+					: shown.has(entry.id)
+						? ""
+						: "  (superseded)"
+				: "  (no jtui adapter)";
 			process.stdout.write(`  ${entry.id}${note}\n`);
 		}
+
 		if (!args.all) {
-			const hidden = catalog.entries.length - supportedModels(catalog).length;
-			if (hidden > 0) process.stdout.write(`\n${hidden} model(s) from other publishers hidden; --all to show.\n`);
+			const otherPublishers = catalog.entries.filter((entry) => !entry.api).length;
+			if (otherPublishers > 0) {
+				process.stdout.write(`\n${otherPublishers} model(s) from other publishers hidden; --all to show.\n`);
+			}
+			const callable = callableModels(catalog);
+			const failed = adapterModels(catalog).length - callable.length;
+			if (failed > 0) process.stdout.write(`${failed} model(s) hidden after a failed check; --all to show why.\n`);
+			const superseded = callable.length - usable.length;
+			if (superseded > 0) process.stdout.write(`${superseded} older version(s) hidden; --all to show.\n`);
 		}
-		process.stdout.write("\nListed models still need access granted in Vertex AI Model Garden.\n");
+
+		const unchecked = usable.filter((entry) => entry.checkedAt === undefined).length;
+		process.stdout.write(
+			unchecked > 0
+				? `\n${unchecked} model(s) never checked; listing does not prove access. Run 'jtui models --check'.\n`
+				: "\nAll listed models answered a real request.\n",
+		);
 		return 0;
 	}
 
