@@ -9,7 +9,7 @@ export type EngineMode = "gcloud" | "antigravity";
  * Common interface for model backends.
  *
  * VertexClient (gcloud) calls Vertex AI directly; AntigravityClient routes
- * through the Jetski CLI. Consumers that only need to stream should accept
+ * through the Antigravity CLI. Consumers that only need to stream should accept
  * this interface rather than a concrete class.
  */
 export interface ModelClient {

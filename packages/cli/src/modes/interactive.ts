@@ -9,13 +9,20 @@ import {
 } from "@jtui/agent";
 import {
 	AntigravityClient,
+	AntigravityCliNotFoundError,
+	adapterModels,
+	applyProbeResults,
 	type CatalogEntry,
+	callableModels,
+	conversationalModels,
 	discoverAntigravityModels,
-	findJetskiCli,
-	JetskiNotFoundError,
+	type EngineMode,
+	findAntigravityCli,
 	loadCatalog,
 	type ModelClient,
 	messageText,
+	probeModels,
+	saveCatalog,
 	supportedModels,
 	UnsupportedModelError,
 	VertexAuthError,
@@ -35,7 +42,7 @@ import {
 	TUI,
 	truncateToWidth,
 } from "@jtui/tui";
-import { saveGlobalConfig } from "../config.ts";
+import { pickDefaultModel, saveGlobalConfig } from "../config.ts";
 import { renderGeneratedImage } from "../images.ts";
 import type { BashExecutor } from "../tools/index.ts";
 import { StreamingView } from "./streaming-view.ts";
@@ -93,13 +100,13 @@ class ToolStatus implements Component {
 const HELP = `Commands
   /help              show this help
   /model [id]        show or switch the model
-  /models [refresh]  list models available to this project
+  /models [refresh|check]  list models; 'check' probes each and hides failures
   /clear             start a new conversation
   /compact           summarize earlier history to free context
   /cost              show token usage and estimated cost
   /tools             list available tools
   /cwd               show the shell working directory
-  /engine [mode]     show or switch engine (gcloud | antigravity)
+  /engine [mode]     switch engine; no arg opens a picker (gcloud | antigravity)
   /location [region] show or switch the Vertex region
   /exit              quit
 
@@ -116,6 +123,13 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 	const { config, state, session, bash, cwd } = options;
 	// Reassigned by /location: the region is fixed at client construction.
 	let client = options.client;
+	// The engines expose different model ids, so remember the model each was last
+	// using; returning to an engine restores its model instead of discarding it.
+	const modelByEngine = new Map<EngineMode, string>();
+	// The region is bound at client construction and lost while in antigravity
+	// mode, so remember it: returning to gcloud must restore the chosen region
+	// rather than snapping back to the default.
+	let vertexLocation = options.client instanceof VertexClient ? options.client.credentials.location : undefined;
 	const terminal = new ProcessTerminal();
 	const tui = new TUI(terminal);
 
@@ -132,6 +146,13 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 	let lastCtrlC = 0;
 	let exitCode = 0;
 	const queued: string[] = [];
+	// A prompt that hit the model's quota and is waiting for the reset window.
+	let pendingRetry: { prompt: string; timer: ReturnType<typeof setTimeout> } | undefined;
+	const cancelPendingRetry = () => {
+		if (!pendingRetry) return;
+		clearTimeout(pendingRetry.timer);
+		pendingRetry = undefined;
+	};
 
 	let signalExit: () => void = () => {};
 	const exited = new Promise<void>((resolvePromise) => {
@@ -140,6 +161,7 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 	/** Tear down the TUI and release the run loop. */
 	const exit = (code: number) => {
 		exitCode = code;
+		cancelPendingRetry();
 		tui.stop();
 		signalExit();
 	};
@@ -194,18 +216,64 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 		tui.requestRender();
 	};
 
-	const chooseModel = async () => {
-		let entries: CatalogEntry[] = client.catalog ? supportedModels(client.catalog) : [];
-		if (entries.length === 0 && client instanceof VertexClient) {
+	const chooseModel = async (onChosen: (id: string) => void = setModel) => {
+		if (!client.catalog && client instanceof VertexClient) {
 			emit([dim("Discovering models…")]);
 			try {
 				client.catalog = await loadCatalog(client.credentials);
-				entries = supportedModels(client.catalog);
 			} catch (error) {
 				emitError(`Could not list models: ${(error as Error).message}`);
 				return;
 			}
 		}
+		if (!client.catalog) {
+			emitError("No models available.");
+			return;
+		}
+
+		// Model Garden lists models the project cannot actually call, and an
+		// unreleased id often outranks the one that works, hiding it. Verify
+		// unchecked candidates with a real request so the list reflects access
+		// rather than what the catalog advertises.
+		if (client instanceof VertexClient) {
+			const unchecked = conversationalModels(client.catalog).filter((entry) => entry.checkedAt === undefined);
+			if (unchecked.length > 0) {
+				if (busy) {
+					emit([yellow("Finish or interrupt the current turn first (esc).")]);
+					return;
+				}
+				busy = true;
+				abortController = new AbortController();
+				const signal = abortController.signal;
+				loader.begin(`Checking 0/${unchecked.length} models`);
+				tui.requestRender();
+				try {
+					const results = await probeModels(client, unchecked, {
+						signal,
+						onResult: (_result, done, total) => {
+							loader.begin(`Checking ${done}/${total} models`);
+							tui.requestRender();
+						},
+					});
+					// An aborted run reports the unfinished models as failures; do not
+					// persist that, or esc would silently mark models unavailable.
+					if (!signal.aborted) {
+						const checked = { ...client.catalog, entries: applyProbeResults(client.catalog.entries, results) };
+						saveCatalog(checked);
+						client.catalog = checked;
+					}
+				} catch (error) {
+					emitError(`Model check failed: ${(error as Error).message}`);
+				} finally {
+					loader.stop();
+					busy = false;
+					abortController = undefined;
+					tui.requestRender();
+				}
+			}
+		}
+
+		const entries: CatalogEntry[] = supportedModels(client.catalog);
 		if (entries.length === 0) {
 			emitError("No models available.");
 			return;
@@ -221,21 +289,24 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 				items,
 				onSelect: (item) => {
 					closeOverlay();
-					setModel(item.value);
+					onChosen(item.value);
 				},
 				onCancel: closeOverlay,
 			}),
 		);
 	};
 
-	/** Switch models, rejecting ids jtui cannot route. */
-	const setModel = (id: string) => {
+	/**
+	 * Point the session at a model without persisting it, rejecting ids jtui
+	 * cannot route. Returns whether the model was applied.
+	 */
+	const applyModel = (id: string): boolean => {
 		try {
 			client.resolveApi(id);
 		} catch (error) {
 			if (error instanceof UnsupportedModelError) {
 				emitError([error.message, ...error.hints].join("\n"));
-				return;
+				return false;
 			}
 			throw error;
 		}
@@ -245,6 +316,12 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 		const prompt = options.systemPromptFor?.(id);
 		if (prompt) config.systemPrompt = prompt;
 		updateStatus();
+		return true;
+	};
+
+	/** Switch models on an explicit /model choice, persisting the selection. */
+	const setModel = (id: string) => {
+		if (!applyModel(id)) return;
 
 		// Remember the choice, so the next run starts on the same model rather
 		// than falling back to whatever the default picker prefers.
@@ -253,6 +330,116 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 			emit([green(`Model set to ${id}`), dim("Saved as your default for future sessions.")]);
 		} catch (error) {
 			emit([green(`Model set to ${id}`), yellow(`Could not save it as the default: ${(error as Error).message}`)]);
+		}
+	};
+
+	/** Present the engines as an arrow-key list, mirroring /model. */
+	const chooseEngine = (onChosen: (mode: EngineMode) => void = (mode) => void setEngine(mode)) => {
+		const current = client instanceof VertexClient ? "gcloud" : "antigravity";
+		const items: SelectItem<EngineMode>[] = (
+			[
+				{ label: "gcloud", description: "direct Vertex AI", value: "gcloud" },
+				{ label: "antigravity", description: "route through the Antigravity CLI", value: "antigravity" },
+			] satisfies SelectItem<EngineMode>[]
+		).map((item) => (item.value === current ? { ...item, label: `${item.label} (current)` } : item));
+		showOverlay(
+			new SelectList<EngineMode>({
+				title: "Select an engine",
+				items,
+				onSelect: (item) => {
+					closeOverlay();
+					onChosen(item.value);
+				},
+				onCancel: closeOverlay,
+			}),
+		);
+	};
+
+	/** Switch engines, rebuilding the client and rediscovering its catalog. */
+	const setEngine = async (mode: EngineMode): Promise<void> => {
+		const current = client instanceof VertexClient ? "gcloud" : "antigravity";
+		if (mode === current) {
+			emit([dim(`Already using ${mode}.`)]);
+			return;
+		}
+		if (busy) {
+			emit([yellow("Finish or interrupt the current turn first (esc).")]);
+			return;
+		}
+
+		// Remember what this engine was using so returning to it restores the
+		// model rather than falling back to the default picker.
+		modelByEngine.set(current, config.model);
+
+		if (mode === "antigravity") {
+			const cliPath = findAntigravityCli();
+			if (!cliPath) {
+				const error = new AntigravityCliNotFoundError();
+				emitError([error.message, ...error.hints].join("\n"));
+				return;
+			}
+			emit([dim("Discovering models via the Antigravity CLI…")]);
+			try {
+				const catalog = await discoverAntigravityModels(cliPath);
+				client = new AntigravityClient(cliPath, { catalog, pricing: client.pricing });
+			} catch (error) {
+				emitError(`Could not switch to antigravity: ${(error as Error).message}`);
+				return;
+			}
+		} else {
+			emit([dim("Verifying Google Cloud credentials…")]);
+			try {
+				const credentials = await verifyCredentials(vertexLocation ? { location: vertexLocation } : {});
+				const catalog = await loadCatalog(credentials);
+				client = new VertexClient(credentials, { catalog, pricing: client.pricing });
+				vertexLocation = credentials.location;
+			} catch (error) {
+				if (error instanceof VertexAuthError) {
+					emitError([error.message, ...error.hints].join("\n"));
+				} else {
+					emitError(`Could not switch to gcloud: ${(error as Error).message}`);
+				}
+				return;
+			}
+		}
+
+		updateStatus();
+		emit([green(`Engine switched to ${mode}`)]);
+
+		try {
+			saveGlobalConfig({ engine: mode });
+			emit([dim("Saved as your default for future sessions.")]);
+		} catch (error) {
+			emit([yellow(`Could not save the default: ${(error as Error).message}`)]);
+		}
+
+		// The engines have different catalogs, so a model valid under one may be
+		// unknown to the other. Prefer the model this engine last used, keep the
+		// current one if the engine knows it, and only fall back to the default
+		// picker when neither is available. Auto-switches are not persisted, so a
+		// detour through another engine never overwrites the saved default.
+		// Match the model selector: a model the catalog lists but a check proved
+		// uncallable (e.g. an anthropic id in a region that cannot serve it) must
+		// not count as known, or switching engines back would reapply a model
+		// whose next turn 400s.
+		const callable = client.catalog ? new Set(callableModels(client.catalog).map((entry) => entry.id)) : undefined;
+		const known = (id: string | undefined): id is string =>
+			id !== undefined && (callable === undefined || callable.has(id));
+
+		const remembered = modelByEngine.get(mode);
+		if (known(remembered) && remembered !== config.model) {
+			applyModel(remembered);
+			return;
+		}
+		if (known(config.model)) return;
+
+		const ids = client.catalog ? supportedModels(client.catalog).map((entry) => entry.id) : [];
+		const fallback = pickDefaultModel(ids);
+		if (fallback) {
+			emit([yellow(`${config.model} is not available in this engine; switching to ${fallback}.`)]);
+			applyModel(fallback);
+		} else {
+			emit([yellow(`${config.model} is not available in this engine.`), dim("  Pick another with /model.")]);
 		}
 	};
 
@@ -283,11 +470,18 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 			emitError(`Could not switch to "${location}": ${(error as Error).message}`);
 			return;
 		}
+		vertexLocation = location;
 
 		// Refresh the status text before emitting: emit triggers the render that
 		// paints it, so updating afterwards leaves the bar a frame stale.
 		updateStatus();
 		emit([green(`Location set to ${location}`)]);
+		try {
+			saveGlobalConfig({ location });
+			emit([dim("Saved as your default for future sessions.")]);
+		} catch (error) {
+			emit([yellow(`Could not save it as the default: ${(error as Error).message}`)]);
+		}
 
 		// The model may not be published in the new region; say so rather than
 		// letting the next turn fail with a raw 404.
@@ -366,76 +560,15 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 				return true;
 			}
 			case "engine": {
-				const current = client instanceof VertexClient ? "gcloud" : "antigravity";
 				if (!argument) {
-					emit([
-						`Engine: ${current}`,
-						dim("  /engine gcloud        direct Vertex AI"),
-						dim("  /engine antigravity   route through Jetski CLI"),
-					]);
+					chooseEngine();
 					return true;
 				}
 				if (argument !== "gcloud" && argument !== "antigravity") {
 					emitError(`Engine must be "gcloud" or "antigravity" (got "${argument}").`);
 					return true;
 				}
-				if (argument === current) {
-					emit([dim(`Already using ${argument}.`)]);
-					return true;
-				}
-				if (busy) {
-					emit([yellow("Finish or interrupt the current turn first (esc).")]);
-					return true;
-				}
-
-				if (argument === "antigravity") {
-					const jetskiPath = findJetskiCli();
-					if (!jetskiPath) {
-						const error = new JetskiNotFoundError();
-						emitError([error.message, ...error.hints].join("\n"));
-						return true;
-					}
-					emit([dim("Discovering models via Jetski…")]);
-					try {
-						const catalog = await discoverAntigravityModels(jetskiPath);
-						client = new AntigravityClient(jetskiPath, { catalog, pricing: client.pricing });
-					} catch (error) {
-						emitError(`Could not switch to antigravity: ${(error as Error).message}`);
-						return true;
-					}
-				} else {
-					emit([dim("Verifying Google Cloud credentials…")]);
-					try {
-						const credentials = await verifyCredentials({});
-						const catalog = await loadCatalog(credentials);
-						client = new VertexClient(credentials, { catalog, pricing: client.pricing });
-					} catch (error) {
-						if (error instanceof VertexAuthError) {
-							emitError([error.message, ...error.hints].join("\n"));
-						} else {
-							emitError(`Could not switch to gcloud: ${(error as Error).message}`);
-						}
-						return true;
-					}
-				}
-
-				// Validate the current model against the new engine.
-				const available = client.catalog ? supportedModels(client.catalog) : [];
-				const modelOk = available.some((entry) => entry.id === config.model);
-
-				updateStatus();
-				emit([green(`Engine switched to ${argument}`)]);
-
-				if (!modelOk && available.length > 0) {
-					emit([yellow(`${config.model} is not available in this engine.`), dim("  Pick another with /model.")]);
-				}
-
-				try {
-					saveGlobalConfig({ engine: argument });
-					emit([dim("Saved as your default for future sessions.")]);
-				} catch (error) {
-					emit([yellow(`Could not save the default: ${(error as Error).message}`)]);
-				}
+				await setEngine(argument);
 				return true;
 			}
 			case "location":
@@ -460,6 +593,7 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 				setModel(argument);
 				return true;
 			case "models": {
+				const check = argument === "check";
 				if (client instanceof VertexClient) {
 					emit([dim("Querying Vertex AI…")]);
 					try {
@@ -469,7 +603,52 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 						return true;
 					}
 				} else {
+					if (check) {
+						emit([yellow("Model checking is not available in antigravity mode.")]);
+						return true;
+					}
 					emit([dim("Using cached model list.")]);
+				}
+				if (check && client instanceof VertexClient && client.catalog) {
+					if (busy) {
+						emit([yellow("Finish or interrupt the current turn first (esc).")]);
+						return true;
+					}
+					// Probing fires a real request per model, so guard it like a turn:
+					// esc aborts, and other input queues rather than overlapping.
+					const targets = adapterModels(client.catalog);
+					busy = true;
+					abortController = new AbortController();
+					const signal = abortController.signal;
+					loader.begin(`Checking 0/${targets.length} models`);
+					tui.requestRender();
+					try {
+						const results = await probeModels(client, targets, {
+							signal,
+							onResult: (_result, done, total) => {
+								loader.begin(`Checking ${done}/${total} models`);
+								tui.requestRender();
+							},
+						});
+						// An aborted run reports the unfinished models as failures; do not
+						// persist that, or esc would silently mark models unavailable.
+						if (signal.aborted) {
+							emit([yellow("Check interrupted; catalog unchanged.")]);
+						} else {
+							const checked = { ...client.catalog, entries: applyProbeResults(client.catalog.entries, results) };
+							saveCatalog(checked);
+							client.catalog = checked;
+							const failed = results.filter((result) => !result.available).length;
+							emit([green(`Checked ${results.length} model(s); ${failed} unavailable and now hidden.`)]);
+						}
+					} catch (error) {
+						emitError(`Model check failed: ${(error as Error).message}`);
+					} finally {
+						loader.stop();
+						busy = false;
+						abortController = undefined;
+						tui.requestRender();
+					}
 				}
 				const catalog = client.catalog;
 				if (!catalog) {
@@ -485,7 +664,7 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 					}
 					rows.push(entry.id === config.model ? cyan(`  ${entry.id}  (current)`) : `  ${entry.id}`);
 				}
-				emit([...rows, dim("  /models refresh re-queries; access is granted in Model Garden.")]);
+				emit([...rows, dim("  /models check probes each model; refresh re-queries Model Garden.")]);
 				return true;
 			}
 			default:
@@ -509,11 +688,79 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 		];
 	};
 
+	/** Queue a prompt to re-run automatically once the quota window elapses. */
+	const scheduleRetry = (prompt: string, delayMs: number) => {
+		cancelPendingRetry();
+		const timer = setTimeout(() => {
+			pendingRetry = undefined;
+			emit([green("Quota should be back — retrying your queued prompt.")]);
+			void handleSubmit(prompt);
+		}, delayMs);
+		pendingRetry = { prompt, timer };
+		emit([
+			yellow(`Model quota exhausted. Queued your prompt; retrying automatically in ${formatDuration(delayMs)}.`),
+			dim("  Or choose an option below to run it now on another model or engine."),
+		]);
+	};
+
+	/** Cancel the auto-retry, pick a new model on this engine, and run the prompt now. */
+	const retryOnAnotherModel = (prompt: string) => {
+		cancelPendingRetry();
+		void chooseModel((id) => {
+			setModel(id);
+			void handleSubmit(prompt);
+		});
+	};
+
+	/** Cancel the auto-retry, switch engine and model, and run the prompt now. */
+	const retryOnAnotherEngine = (prompt: string) => {
+		cancelPendingRetry();
+		chooseEngine(async (mode) => {
+			await setEngine(mode);
+			void chooseModel((id) => {
+				setModel(id);
+				void handleSubmit(prompt);
+			});
+		});
+	};
+
+	/**
+	 * A model quota is exhausted. Queue the prompt for automatic retry (the
+	 * default), and offer to run it now on another model or engine instead.
+	 */
+	const offerQuotaRetry = (prompt: string, resetMs: number) => {
+		scheduleRetry(prompt, resetMs);
+		showOverlay(
+			new SelectList<string>({
+				title: "Model quota exhausted",
+				items: [
+					{
+						label: `Wait ${formatDuration(resetMs)} and retry automatically`,
+						description: "recommended",
+						value: "wait",
+					},
+					{ label: "Retry now on another model", description: "same engine", value: "model" },
+					{ label: "Retry now on another engine and model", value: "engine" },
+				],
+				onSelect: (item) => {
+					closeOverlay();
+					if (item.value === "wait") return;
+					if (item.value === "model") retryOnAnotherModel(prompt);
+					else retryOnAnotherEngine(prompt);
+				},
+				// Cancelling keeps the scheduled auto-retry.
+				onCancel: closeOverlay,
+			}),
+		);
+	};
+
 	const runTurn = async (prompt: string): Promise<void> => {
 		busy = true;
 		abortController = new AbortController();
 		loader.begin("Thinking");
 		const turnStartedAt = Date.now();
+		// Set when the turn fails with a quota-exhausted error; drives the retry flow.
+		let quotaResetMs: number | undefined;
 		tui.requestRender();
 
 		// Commit any streamed reasoning to scrollback, with a blank line to set
@@ -590,9 +837,13 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 						]);
 						break;
 					}
-					case "error":
-						emitError(event.message);
+					case "error": {
+						quotaResetMs = parseQuotaReset(event.message);
+						// A quota error is handled by the retry flow after the turn ends,
+						// so it is not surfaced as a hard error here.
+						if (quotaResetMs === undefined) emitError(event.message);
 						break;
+					}
 					case "turn_end": {
 						if (event.reason === "aborted") emit([yellow("Interrupted.")]);
 						const seconds = (Date.now() - turnStartedAt) / 1000;
@@ -616,9 +867,16 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 			abortController = undefined;
 			updateStatus();
 			tui.requestRender();
-			const next = queued.shift();
-			if (next !== undefined) await handleSubmit(next);
 		}
+
+		if (quotaResetMs !== undefined) {
+			// Hold the queue until the retry runs; the queued prompts would only hit
+			// the same exhausted quota now.
+			offerQuotaRetry(prompt, quotaResetMs);
+			return;
+		}
+		const next = queued.shift();
+		if (next !== undefined) await handleSubmit(next);
 	};
 
 	async function handleSubmit(text: string): Promise<void> {
@@ -677,6 +935,41 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 	return exitCode;
 }
 
+/**
+ * Extract the retry delay from a quota-exhausted error, in milliseconds.
+ *
+ * The Antigravity CLI reports these as free text, e.g. "You have exhausted your
+ * capacity on this model. Your quota will reset after 10m10s." Returns undefined
+ * for any other error so the caller can fall back to surfacing it normally.
+ */
+export function parseQuotaReset(message: string): number | undefined {
+	if (!/exhausted (?:your )?capacity|quota will reset/i.test(message)) return undefined;
+	const match = /reset (?:after|in) ((?:\d+h)?(?:\d+m)?(?:\d+s)?)/i.exec(message);
+	const spec = match?.[1];
+	if (!spec) return undefined;
+	const hours = /(\d+)h/.exec(spec);
+	const minutes = /(\d+)m/.exec(spec);
+	const seconds = /(\d+)s/.exec(spec);
+	const total =
+		(hours ? Number(hours[1]) : 0) * 3600 +
+		(minutes ? Number(minutes[1]) : 0) * 60 +
+		(seconds ? Number(seconds[1]) : 0);
+	return total > 0 ? total * 1000 : undefined;
+}
+
+/** Render a millisecond duration as a compact "1h2m3s" string. */
+function formatDuration(ms: number): string {
+	const total = Math.round(ms / 1000);
+	const hours = Math.floor(total / 3600);
+	const minutes = Math.floor((total % 3600) / 60);
+	const seconds = total % 60;
+	const parts: string[] = [];
+	if (hours) parts.push(`${hours}h`);
+	if (minutes) parts.push(`${minutes}m`);
+	if (seconds || parts.length === 0) parts.push(`${seconds}s`);
+	return parts.join("");
+}
+
 function printBanner(client: ModelClient, config: AgentConfig, cwd: string): void {
 	const entry = client.entryFor(config.model);
 	const publisher = entry ? ` (${entry.publisher})` : "";
@@ -687,7 +980,7 @@ function printBanner(client: ModelClient, config: AgentConfig, cwd: string): voi
 		lines.push(dim(`  project  ${client.credentials.project}`));
 		lines.push(dim(`  location ${client.credentials.location}`));
 	} else {
-		lines.push(dim("  engine   antigravity (Jetski CLI)"));
+		lines.push(dim("  engine   antigravity (Antigravity CLI)"));
 	}
 	lines.push(dim(`  cwd      ${cwd}`), "", dim("  /help for commands, esc to interrupt"), "");
 	process.stdout.write(`${lines.join("\n")}\n`);

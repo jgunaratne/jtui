@@ -1,8 +1,8 @@
 export {
 	AntigravityClient,
+	AntigravityCliNotFoundError,
 	discoverAntigravityModels,
-	findJetskiCli,
-	JetskiNotFoundError,
+	findAntigravityCli,
 } from "./antigravity.ts";
 export { AnthropicApi } from "./api/anthropic.ts";
 export { convertMessages, convertTools, GeminiApi } from "./api/gemini.ts";
@@ -19,6 +19,7 @@ export {
 	type CatalogEntry,
 	type CatalogOptions,
 	callableModels,
+	conversationalModels,
 	fetchCatalog,
 	loadCatalog,
 	type ModelApi,

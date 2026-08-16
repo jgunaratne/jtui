@@ -28,7 +28,7 @@ export interface JtuiConfig {
 	 * { "claude-sonnet-4-5": { "inputPerMillion": 3, "outputPerMillion": 15 } }
 	 */
 	pricing?: PricingTable;
-	/** Which backend handles model requests: "gcloud" for direct Vertex AI, "antigravity" for Jetski CLI. */
+	/** Which backend handles model requests: "gcloud" for direct Vertex AI, "antigravity" for the Antigravity CLI. */
 	engine?: EngineMode;
 }
 

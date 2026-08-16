@@ -4,3 +4,6 @@ dist/
 .DS_Store
 .jtui/
 *.log
+.env
+.env.*
+!.env.example

@@ -69,13 +69,25 @@ export interface ModelCatalog {
 /**
  * Models jtui can send a request to, sorted by publisher then id.
  *
- * Excludes models a check proved uncallable, then keeps only the newest release
- * of each line. Unchecked models are kept: an unverified model is assumed
- * usable rather than hidden on a guess. Superseded ids remain callable with an
- * explicit `-m`.
+ * Excludes models a check proved uncallable, then drops specialty models that
+ * cannot do text/agent work (TTS, embedding, live audio), then keeps only the
+ * newest release of each line. Unchecked models are kept: an unverified model
+ * is assumed usable rather than hidden on a guess. Superseded ids remain
+ * callable with an explicit `-m`.
  */
 export function supportedModels(catalog: ModelCatalog): CatalogEntry[] {
-	return latestModels(callableModels(catalog));
+	return latestModels(conversationalModels(catalog));
+}
+
+/**
+ * Id patterns that mark a model as non-conversational. These models have
+ * adapters but are not useful as coding agents.
+ */
+const NON_CONVERSATIONAL = /-(tts|embedding|live)\b/;
+
+/** Callable, conversational models — excludes TTS, embedding, live audio. */
+export function conversationalModels(catalog: ModelCatalog): CatalogEntry[] {
+	return callableModels(catalog).filter((entry) => !NON_CONVERSATIONAL.test(entry.id));
 }
 
 /** Callable models, including ones superseded by a newer release. */

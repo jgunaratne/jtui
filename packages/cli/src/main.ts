@@ -1,17 +1,19 @@
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentConfig } from "@jtui/agent";
 import { createState, listSessions, loadSession, newSessionId, Session } from "@jtui/agent";
 import {
 	AntigravityClient,
+	AntigravityCliNotFoundError,
 	adapterModels,
 	applyProbeResults,
 	callableModels,
+	conversationalModels,
 	discoverAntigravityModels,
 	type EngineMode,
-	findJetskiCli,
-	JetskiNotFoundError,
+	findAntigravityCli,
 	loadCatalog,
 	type ModelCatalog,
 	type ModelClient,
@@ -70,6 +72,73 @@ async function checkModels(
 	return checked;
 }
 
+/**
+ * Honour an explicit `-m`, then a saved default only when the selected engine's
+ * catalog knows the id. The gcloud and antigravity engines expose different
+ * model lists, so a default saved under one must not silently run under the
+ * other.
+ */
+function configuredModel(
+	args: ReturnType<typeof parseArgs>,
+	fileConfig: ReturnType<typeof loadConfig>,
+	catalog: ModelCatalog | undefined,
+): string | undefined {
+	if (args.model) return args.model;
+	if (!fileConfig.model) return undefined;
+	if (catalog && !callableModels(catalog).some((entry) => entry.id === fileConfig.model)) {
+		process.stderr.write(`jtui: saved model "${fileConfig.model}" is not available in this engine; picking another.\n`);
+		return undefined;
+	}
+	return fileConfig.model;
+}
+
+/**
+ * Resolve a default model that answers a real request.
+ *
+ * Model Garden lists models the project cannot call, and an unreleased id often
+ * outranks the working one, so trusting the catalog can settle on a model whose
+ * first turn 404s. Probe the unchecked conversational candidates once (results
+ * are cached in the catalog), then pick from what actually responded.
+ */
+async function resolveDefaultModel(
+	client: VertexClient,
+	catalog: ModelCatalog,
+): Promise<{ model: string | undefined; catalog: ModelCatalog }> {
+	const unchecked = conversationalModels(catalog).filter((entry) => entry.checkedAt === undefined);
+	if (unchecked.length === 0) {
+		return { model: pickDefaultModel(supportedModels(catalog).map((entry) => entry.id)), catalog };
+	}
+	process.stderr.write(`jtui: verifying ${unchecked.length} model(s) to pick a default...\n`);
+	const results = await probeModels(client, unchecked, {
+		onResult: (result, done, total) => {
+			const mark = result.available ? "ok  " : "fail";
+			process.stderr.write(`  [${done}/${total}] ${mark} ${result.id}\n`);
+		},
+	});
+	const checked: ModelCatalog = { ...catalog, entries: applyProbeResults(catalog.entries, results) };
+	saveCatalog(checked);
+	client.catalog = checked;
+	return { model: pickDefaultModel(supportedModels(checked).map((entry) => entry.id)), catalog: checked };
+}
+
+/**
+ * Load environment from `.env`, so deployment-specific and sensitive settings
+ * (such as the Antigravity CLI path) stay out of the committed source.
+ *
+ * `loadEnvFile` never overwrites a variable already set, so the order is
+ * precedence order: an exported variable wins, then the working directory's
+ * `.env`, then the user config dir. Missing files are ignored.
+ */
+function loadEnvFiles(cwd: string): void {
+	for (const path of [join(cwd, ".env"), join(homedir(), ".jtui", ".env")]) {
+		try {
+			process.loadEnvFile(path);
+		} catch {
+			// No .env at this location, or it is unreadable; that is fine.
+		}
+	}
+}
+
 /** Print an auth failure with its setup hints. */
 function reportAuthError(error: VertexAuthError): void {
 	process.stderr.write(`jtui: ${error.message}\n`);
@@ -94,6 +163,7 @@ export async function main(argv: string[]): Promise<number> {
 	}
 
 	const cwd = process.cwd();
+	loadEnvFiles(cwd);
 	const fileConfig = loadConfig(cwd);
 
 	if (args.command === "sessions") {
@@ -110,25 +180,25 @@ export async function main(argv: string[]): Promise<number> {
 
 	const engine: EngineMode = args.engine ?? fileConfig.engine ?? "gcloud";
 
-	// ---- Antigravity (Jetski CLI) path ----
+	// ---- Antigravity CLI path ----
 	if (engine === "antigravity") {
-		const jetskiPath = findJetskiCli();
-		if (!jetskiPath) {
-			const error = new JetskiNotFoundError();
+		const cliPath = findAntigravityCli();
+		if (!cliPath) {
+			const error = new AntigravityCliNotFoundError();
 			process.stderr.write(`jtui: ${error.message}\n`);
 			for (const hint of error.hints) process.stderr.write(`  ${hint}\n`);
 			return 1;
 		}
 
 		if (args.command === "auth") {
-			process.stdout.write("Antigravity mode — authentication is handled by the Jetski CLI.\n");
-			process.stdout.write(`  jetski  ${jetskiPath}\n`);
+			process.stdout.write("Antigravity mode — authentication is handled by the Antigravity CLI.\n");
+			process.stdout.write(`  cli  ${cliPath}\n`);
 			return 0;
 		}
 
 		let catalog: ModelCatalog | undefined;
 		try {
-			catalog = await discoverAntigravityModels(jetskiPath);
+			catalog = await discoverAntigravityModels(cliPath);
 		} catch (error) {
 			if (args.command === "models") {
 				process.stderr.write(`jtui: could not list models: ${(error as Error).message}\n`);
@@ -152,13 +222,13 @@ export async function main(argv: string[]): Promise<number> {
 		}
 
 		const available = catalog ? supportedModels(catalog).map((entry) => entry.id) : [];
-		const model = args.model ?? fileConfig.model ?? pickDefaultModel(available);
+		const model = configuredModel(args, fileConfig, catalog) ?? pickDefaultModel(available);
 		if (!model) {
 			process.stderr.write("jtui: no usable model found. Run 'jtui models' to see what this project can call.\n");
 			return 1;
 		}
 
-		const client: ModelClient = new AntigravityClient(jetskiPath, { catalog, pricing: fileConfig.pricing });
+		const client: ModelClient = new AntigravityClient(cliPath, { catalog, pricing: fileConfig.pricing });
 		return runWithClient(client, model, args, fileConfig, cwd);
 	}
 
@@ -255,14 +325,21 @@ export async function main(argv: string[]): Promise<number> {
 		return 0;
 	}
 
-	const available = catalog ? supportedModels(catalog).map((entry) => entry.id) : [];
-	const model = args.model ?? fileConfig.model ?? pickDefaultModel(available);
+	const client = new VertexClient(credentials, { catalog, pricing: fileConfig.pricing });
+
+	// An explicit choice is honoured as-is; only a default is verified, since
+	// the catalog alone cannot tell a callable model from one merely listed.
+	let model = configuredModel(args, fileConfig, catalog);
+	if (!model && catalog) {
+		const resolved = await resolveDefaultModel(client, catalog);
+		catalog = resolved.catalog;
+		model = resolved.model;
+	}
 	if (!model) {
 		process.stderr.write("jtui: no usable model found. Run 'jtui models' to see what this project can call.\n");
 		return 1;
 	}
 
-	const client: ModelClient = new VertexClient(credentials, { catalog, pricing: fileConfig.pricing });
 	try {
 		// Fail fast on an unroutable model rather than mid-conversation.
 		client.resolveApi(model);
