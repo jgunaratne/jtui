@@ -8,13 +8,19 @@ import {
 	type ToolExecution,
 } from "@jtui/agent";
 import {
+	AntigravityClient,
 	type CatalogEntry,
+	discoverAntigravityModels,
+	findJetskiCli,
+	JetskiNotFoundError,
 	loadCatalog,
 	type ModelClient,
 	messageText,
 	supportedModels,
 	UnsupportedModelError,
+	VertexAuthError,
 	VertexClient,
+	verifyCredentials,
 } from "@jtui/ai";
 import {
 	type Component,
@@ -93,6 +99,7 @@ const HELP = `Commands
   /cost              show token usage and estimated cost
   /tools             list available tools
   /cwd               show the shell working directory
+  /engine [mode]     show or switch engine (gcloud | antigravity)
   /location [region] show or switch the Vertex region
   /exit              quit
 
@@ -356,6 +363,79 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 					emitError(`Compaction failed: ${(error as Error).message}`);
 				}
 				session.sync(state);
+				return true;
+			}
+			case "engine": {
+				const current = client instanceof VertexClient ? "gcloud" : "antigravity";
+				if (!argument) {
+					emit([
+						`Engine: ${current}`,
+						dim("  /engine gcloud        direct Vertex AI"),
+						dim("  /engine antigravity   route through Jetski CLI"),
+					]);
+					return true;
+				}
+				if (argument !== "gcloud" && argument !== "antigravity") {
+					emitError(`Engine must be "gcloud" or "antigravity" (got "${argument}").`);
+					return true;
+				}
+				if (argument === current) {
+					emit([dim(`Already using ${argument}.`)]);
+					return true;
+				}
+				if (busy) {
+					emit([yellow("Finish or interrupt the current turn first (esc).")]);
+					return true;
+				}
+
+				if (argument === "antigravity") {
+					const jetskiPath = findJetskiCli();
+					if (!jetskiPath) {
+						const error = new JetskiNotFoundError();
+						emitError([error.message, ...error.hints].join("\n"));
+						return true;
+					}
+					emit([dim("Discovering models via Jetski…")]);
+					try {
+						const catalog = await discoverAntigravityModels(jetskiPath);
+						client = new AntigravityClient(jetskiPath, { catalog, pricing: client.pricing });
+					} catch (error) {
+						emitError(`Could not switch to antigravity: ${(error as Error).message}`);
+						return true;
+					}
+				} else {
+					emit([dim("Verifying Google Cloud credentials…")]);
+					try {
+						const credentials = await verifyCredentials({});
+						const catalog = await loadCatalog(credentials);
+						client = new VertexClient(credentials, { catalog, pricing: client.pricing });
+					} catch (error) {
+						if (error instanceof VertexAuthError) {
+							emitError([error.message, ...error.hints].join("\n"));
+						} else {
+							emitError(`Could not switch to gcloud: ${(error as Error).message}`);
+						}
+						return true;
+					}
+				}
+
+				// Validate the current model against the new engine.
+				const available = client.catalog ? supportedModels(client.catalog) : [];
+				const modelOk = available.some((entry) => entry.id === config.model);
+
+				updateStatus();
+				emit([green(`Engine switched to ${argument}`)]);
+
+				if (!modelOk && available.length > 0) {
+					emit([yellow(`${config.model} is not available in this engine.`), dim("  Pick another with /model.")]);
+				}
+
+				try {
+					saveGlobalConfig({ engine: argument });
+					emit([dim("Saved as your default for future sessions.")]);
+				} catch (error) {
+					emit([yellow(`Could not save the default: ${(error as Error).message}`)]);
+				}
 				return true;
 			}
 			case "location":
