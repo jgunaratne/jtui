@@ -28,6 +28,7 @@ import {
 	TUI,
 	truncateToWidth,
 } from "@jtui/tui";
+import { saveGlobalConfig } from "../config.ts";
 import type { BashExecutor } from "../tools/index.ts";
 import { StreamingView } from "./streaming-view.ts";
 
@@ -229,7 +230,15 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 		const prompt = options.systemPromptFor?.(id);
 		if (prompt) config.systemPrompt = prompt;
 		updateStatus();
-		emit([green(`Model set to ${id}`)]);
+
+		// Remember the choice, so the next run starts on the same model rather
+		// than falling back to whatever the default picker prefers.
+		try {
+			saveGlobalConfig({ model: id });
+			emit([green(`Model set to ${id}`), dim("Saved as your default for future sessions.")]);
+		} catch (error) {
+			emit([green(`Model set to ${id}`), yellow(`Could not save it as the default: ${(error as Error).message}`)]);
+		}
 	};
 
 	/**

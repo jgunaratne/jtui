@@ -173,6 +173,10 @@ with the version removed, so `flash`, `flash-lite` and `flash-image` stay distin
 release beats a preview of the same version. `--all` lists the superseded ids, and any of them can
 still be used with an explicit `-m`.
 
+Picking a model with `/model` saves it to `~/.jtui/config.json`, so the next session starts on the
+same one instead of falling back to the default. Override it for a single run with `-m`, or for one
+project with a `model` in its `.jtui/config.json`, which takes precedence over the saved default.
+
 Switching model mid-session with `/model` is safe across publishers — reasoning blocks signed by one
 provider are dropped rather than replayed to another, which would be rejected.
 
