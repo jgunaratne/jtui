@@ -160,6 +160,9 @@ export async function* runAgent(
 					case "thinking_delta":
 						yield { type: "thinking_delta", delta: event.delta };
 						break;
+					case "image":
+						yield { type: "image", image: event.image };
+						break;
 					case "tool_call":
 						// Surfaced again as tool_start once execution begins.
 						break;

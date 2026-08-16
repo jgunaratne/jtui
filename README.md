@@ -291,6 +291,43 @@ Turn it off with `--no-compaction`, or tune it in config:
 If `JTUI.md`, `AGENTS.md`, or `CLAUDE.md` is present (first match wins), its contents are appended
 to the system prompt. Use it for project conventions the agent should follow.
 
+## Generated images
+
+Image models such as `gemini-3.1-flash-image` answer with pixels rather than prose. jtui keeps the
+bytes, writes every generated image to `.jtui/images/` in the project, and draws it inline when the
+terminal can show it:
+
+```
+❯ A red circle on a white background.
+[the image, drawn in the terminal]
+image 587×320 · .jtui/images/1786846496067.png
+```
+
+Drawing uses **sixel**, encoded in-process — the PNG is decoded with Node's own zlib, scaled to fit
+the window, and quantized to a 256-colour palette, so there is no dependency on `img2sixel`,
+ImageMagick or a native module. Inside tmux 3.4+ the image is parsed and repainted by tmux itself,
+which is why sixel is used rather than the kitty or iTerm2 graphics protocols: neither survives a
+multiplexer.
+
+Support is decided from the environment, since the definitive DA1 query cannot be made without
+taking over the terminal. iTerm2, WezTerm, kitty, Ghostty, foot, contour, mlterm and Konsole are
+recognised, including through tmux and ssh — `LC_TERMINAL` is consulted alongside `TERM_PROGRAM`,
+which tmux overwrites with its own name.
+
+When the terminal cannot draw images — a pipe, a plain xterm, `TERM=dumb` — the image is still saved
+and the path printed, so nothing is lost:
+
+```
+[image 1408×768, 73781 bytes]
+image 1408×768 · .jtui/images/1786846496067.png
+```
+
+With `--print --json`, an image arrives as `{"type":"image","mimeType":...,"path":...,"bytes":...}`
+naming the file, rather than megabytes of base64 in the event stream.
+
+Only PNG is decoded, which is what the image models return; another format is saved but reported as
+undrawable rather than guessed at.
+
 ## Tools
 
 `read` `write` `edit` `list` `glob` `grep` `bash`

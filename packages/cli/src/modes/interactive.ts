@@ -29,6 +29,7 @@ import {
 	truncateToWidth,
 } from "@jtui/tui";
 import { saveGlobalConfig } from "../config.ts";
+import { renderGeneratedImage } from "../images.ts";
 import type { BashExecutor } from "../tools/index.ts";
 import { StreamingView } from "./streaming-view.ts";
 
@@ -430,6 +431,21 @@ export async function runInteractive(options: InteractiveOptions): Promise<numbe
 						loader.stop();
 						thinking.append(event.delta);
 						break;
+					case "image": {
+						loader.stop();
+						flushThinking();
+						// Commit any streamed text first so the image lands in order.
+						streaming.finish(terminal.columns);
+						tui.addStatic([
+							...renderGeneratedImage(event.image, {
+								cwd: options.cwd,
+								columns: terminal.columns,
+								rows: terminal.rows,
+							}),
+							"",
+						]);
+						break;
+					}
 					case "assistant_message":
 						streaming.finish(terminal.columns);
 						if (messageText(event.message).trim().length > 0) tui.addStatic([""]);

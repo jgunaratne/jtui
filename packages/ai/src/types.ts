@@ -42,7 +42,7 @@ export interface ToolCallContent {
 	thoughtSignature?: string;
 }
 
-export type AssistantContent = TextContent | ThinkingContent | ToolCallContent;
+export type AssistantContent = TextContent | ThinkingContent | ToolCallContent | ImageContent;
 export type UserContent = TextContent | ImageContent;
 
 export interface UserMessage {
@@ -142,6 +142,8 @@ export type StreamEvent =
 	| { type: "thinking_delta"; delta: string }
 	| { type: "text_delta"; delta: string }
 	| { type: "tool_call"; toolCall: ToolCallContent }
+	/** A generated image, emitted whole rather than streamed. */
+	| { type: "image"; image: ImageContent }
 	/** Terminal event; always emitted exactly once. */
 	| { type: "done"; message: AssistantMessage };
 

@@ -1,4 +1,13 @@
-import type { AssistantMessage, JsonSchema, Message, StopReason, ToolCallContent, Usage, UserContent } from "@jtui/ai";
+import type {
+	AssistantMessage,
+	ImageContent,
+	JsonSchema,
+	Message,
+	StopReason,
+	ToolCallContent,
+	Usage,
+	UserContent,
+} from "@jtui/ai";
 import type { CompactionSettings } from "./compaction.ts";
 
 /** Runtime context handed to a tool during execution. */
@@ -42,6 +51,8 @@ export type AgentEvent =
 	| { type: "message_start"; model: string }
 	| { type: "thinking_delta"; delta: string }
 	| { type: "text_delta"; delta: string }
+	/** An image the model generated, complete rather than streamed. */
+	| { type: "image"; image: ImageContent }
 	| { type: "assistant_message"; message: AssistantMessage }
 	| { type: "tool_start"; toolCall: ToolCallContent; summary: string }
 	| { type: "tool_end"; execution: ToolExecution }

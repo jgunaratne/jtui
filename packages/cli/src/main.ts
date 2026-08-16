@@ -266,6 +266,7 @@ export async function main(argv: string[]): Promise<number> {
 			state,
 			session,
 			prompt: args.prompt ?? "",
+			cwd,
 			verbose: args.verbose,
 			json: args.json,
 		});

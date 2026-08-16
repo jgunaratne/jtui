@@ -16,6 +16,7 @@ import type {
 	AssistantContent,
 	AssistantMessage,
 	Context,
+	ImageContent,
 	Message,
 	StopReason,
 	StreamEvent,
@@ -74,6 +75,10 @@ function assistantParts(content: AssistantContent[], replayThinking: boolean): P
 					...(block.signature ? { thoughtSignature: block.signature } : {}),
 				});
 			}
+		} else if (block.type === "image") {
+			// Gemini accepts a generated image back, so a follow-up turn can
+			// refer to what it just produced.
+			parts.push({ inlineData: { mimeType: block.mimeType, data: block.data } });
 		} else {
 			parts.push({
 				functionCall: { id: block.id, name: block.name, args: block.arguments },
@@ -247,6 +252,19 @@ export class GeminiApi {
 						toolCalls.push(call);
 						content.push(call);
 						yield { type: "tool_call", toolCall: call };
+						continue;
+					}
+					if (part.inlineData?.data) {
+						// Image models answer with bytes, not text. Close out any
+						// pending text so the image lands in reading order.
+						flushText();
+						const image: ImageContent = {
+							type: "image",
+							data: part.inlineData.data,
+							mimeType: part.inlineData.mimeType ?? "image/png",
+						};
+						content.push(image);
+						yield { type: "image", image };
 						continue;
 					}
 					if (part.text === undefined || part.text.length === 0) continue;

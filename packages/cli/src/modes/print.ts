@@ -1,6 +1,7 @@
 import type { AgentConfig, AgentState, Session } from "@jtui/agent";
 import { runAgent } from "@jtui/agent";
 import { messageText, type VertexClient } from "@jtui/ai";
+import { renderGeneratedImage, saveImage } from "../images.ts";
 
 export interface PrintOptions {
 	client: VertexClient;
@@ -8,6 +9,8 @@ export interface PrintOptions {
 	state: AgentState;
 	session: Session;
 	prompt: string;
+	/** Where generated images are written. */
+	cwd: string;
 	/** Emit tool activity to stderr as it happens. */
 	verbose?: boolean;
 	/** Emit one JSON object per event to stdout instead of prose. */
@@ -30,6 +33,14 @@ export async function runPrint(options: PrintOptions): Promise<number> {
 	try {
 		for await (const event of runAgent(client, config, state, prompt, controller.signal)) {
 			if (options.json) {
+				if (event.type === "image") {
+					// Megabytes of base64 would drown the event stream; the file
+					// on disk is what a consumer actually wants.
+					const path = saveImage(event.image, options.cwd);
+					const bytes = Buffer.from(event.image.data, "base64").length;
+					process.stdout.write(`${JSON.stringify({ type: "image", mimeType: event.image.mimeType, path, bytes })}\n`);
+					continue;
+				}
 				process.stdout.write(`${JSON.stringify(event)}\n`);
 				if (event.type === "error") failed = true;
 				continue;
@@ -38,6 +49,17 @@ export async function runPrint(options: PrintOptions): Promise<number> {
 				case "text_delta":
 					process.stdout.write(event.delta);
 					break;
+				case "image": {
+					const lines = renderGeneratedImage(event.image, {
+						cwd: options.cwd,
+						// Only draw into a real terminal; a pipe gets the path.
+						...(process.stdout.isTTY
+							? { columns: process.stdout.columns, rows: process.stdout.rows }
+							: { sixel: false }),
+					});
+					process.stdout.write(`${lines.join("\n")}\n`);
+					break;
+				}
 				case "tool_start":
 					if (options.verbose) process.stderr.write(`· ${event.summary}\n`);
 					break;
